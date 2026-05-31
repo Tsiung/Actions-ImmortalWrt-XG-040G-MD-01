@@ -26,6 +26,8 @@ fi
 
 # 3. 应用设备补丁
 if [ -f "$PATCH_FILE" ]; then
+# 创建补丁中需要的文件（避免 patch 失败）
+    touch xg-040g-md.config
     echo "正在应用补丁: $PATCH_FILE"
     patch -p1 < "$PATCH_FILE"
     if [ $? -eq 0 ]; then
