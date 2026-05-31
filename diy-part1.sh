@@ -1,19 +1,15 @@
 #!/bin/bash
-# 根据当前 REPO_BRANCH 选择对应的补丁文件
-
 PATCHES_DIR="$GITHUB_WORKSPACE/patches"
+USER_BRANCH="$1"   # 例如 master-XG-040G-MD 或 openwrt-25.12-XG-040G-MD
 
-# 获取当前编译分支（由 workflow 中的 REPO_BRANCH 环境变量传入）
-BRANCH="$REPO_BRANCH"
+echo "用户选择分支: $USER_BRANCH"
 
-echo "当前编译分支: $BRANCH"
-
-if [ "$BRANCH" = "master-XG-040G-MD" ]; then
+if [ "$USER_BRANCH" = "master-XG-040G-MD" ]; then
     PATCH_FILE="$PATCHES_DIR/airoha-en7581-support-master-fzs209-260531.patch"
-elif [ "$BRANCH" = "openwrt-25.12-XG-040G-MD" ]; then
+elif [ "$USER_BRANCH" = "openwrt-25.12-XG-040G-MD" ]; then
     PATCH_FILE="$PATCHES_DIR/airoha-en7581-support-25.12-fzs209-260531.patch"
 else
-    echo "未知分支: $BRANCH，跳过补丁"
+    echo "未知分支，跳过补丁"
     exit 0
 fi
 
