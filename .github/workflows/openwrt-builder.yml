@@ -61,7 +61,6 @@ jobs:
         esac
         echo "OFFICIAL_BRANCH=$OFFICIAL_BRANCH" >> $GITHUB_ENV
         echo "USER_BRANCH=$USER_BRANCH" >> $GITHUB_ENV
-        echo "映射分支: $USER_BRANCH -> $OFFICIAL_BRANCH"
 
     - name: Clone Source Code
       run: |
@@ -71,9 +70,9 @@ jobs:
 
     - name: Apply Device Patches
       run: |
+        chmod +x $GITHUB_WORKSPACE/diy-part1.sh
         cd $OPENWRT_PATH
-        # 传入用户选择的分支名（带 -XG-040G-MD 后缀），让 diy-part1.sh 据此选择补丁
-        bash $GITHUB_WORKSPACE/diy-part1.sh "$USER_BRANCH"
+        $GITHUB_WORKSPACE/diy-part1.sh "$USER_BRANCH"
 
     - name: Generate Variables
       run: |
