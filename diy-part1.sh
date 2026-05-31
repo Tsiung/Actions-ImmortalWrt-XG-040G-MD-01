@@ -1,6 +1,7 @@
+diy-part1.sh：
 #!/bin/bash
 PATCHES_DIR="$GITHUB_WORKSPACE/patches"
-USER_BRANCH="$1"
+USER_BRANCH="$1"   # 例如 master-XG-040G-MD 或 openwrt-25.12-XG-040G-MD
 
 echo "用户选择分支: $USER_BRANCH"
 
@@ -15,20 +16,8 @@ fi
 
 if [ -f "$PATCH_FILE" ]; then
     echo "正在应用补丁: $PATCH_FILE"
-    # 创建临时补丁文件，排除 xg-040g-md.config 相关的所有 hunk
-    TEMP_PATCH=$(mktemp)
-    # 使用 sed 删除从 diff --git a/xg-040g-md.config 到下一个 diff --git 或文件结束的内容
-    sed '/^diff --git a\/xg-040g-md.config/,/^diff --git /{ /^diff --git a\/xg-040g-md.config/d; /^--- a\/xg-040g-md.config/d; /^\+\+\+ b\/xg-040g-md.config/d; /^@@.*xg-040g-md.config/d; }' "$PATCH_FILE" > "$TEMP_PATCH"
-    # 如果临时文件非空，应用它
-    if [ -s "$TEMP_PATCH" ]; then
-        patch -p1 < "$TEMP_PATCH"
-        PATCH_EXIT=$?
-    else
-        echo "补丁过滤后为空，跳过"
-        PATCH_EXIT=0
-    fi
-    rm -f "$TEMP_PATCH"
-    if [ $PATCH_EXIT -eq 0 ]; then
+    patch -p1 < "$PATCH_FILE"
+    if [ $? -eq 0 ]; then
         echo "补丁应用成功"
     else
         echo "补丁应用失败！"
@@ -38,3 +27,140 @@ else
     echo "错误: 找不到补丁文件 $PATCH_FILE"
     exit 1
 fi
+
+
+.github/workflows/openwrt-builder.yml：
+name: XG-040G-MD
+
+on:
+  workflow_dispatch:
+    inputs:
+      repo_branch:
+        description: '选择编译分支'
+        required: true
+        default: 'master-XG-040G-MD'
+        type: choice
+        options:
+          - master-XG-040G-MD
+          - openwrt-25.12-XG-040G-MD
+
+env:
+  REPO_URL: https://github.com/immortalwrt/immortalwrt.git
+  DEVICE_TARGET: airoha
+  DEVICE_SUBTARGET: an7581
+  CACHE_TOOLCHAIN: true
+  UPLOAD_BIN_DIR: false
+  FIRMWARE_RELEASE: true
+  TZ: Asia/Shanghai
+
+jobs:
+  Build:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Initialization Environment
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        sudo bash -c 'bash <(curl -sL https://build-scripts.immortalwrt.org/init_build_environment.sh)'
+        sudo -E apt -yqq install dos2unix libfuse-dev
+        sudo timedatectl set-timezone "$TZ"
+
+    - name: Combine Disks
+      uses: easimon/maximize-build-space@master
+      with:
+        swap-size-mb: 1024
+        temp-reserve-mb: 100
+        root-reserve-mb: 1024
+
+    - name: Checkout
+      uses: actions/checkout@main
+
+    - name: Set branch mapping
+      id: branch_map
+      run: |
+        USER_BRANCH="${{ github.event.inputs.repo_branch }}"
+        case "$USER_BRANCH" in
+          master-XG-040G-MD)
+            OFFICIAL_BRANCH="master"
+            ;;
+          openwrt-25.12-XG-040G-MD)
+            OFFICIAL_BRANCH="openwrt-25.12"
+            ;;
+          *)
+            echo "未知分支: $USER_BRANCH"
+            exit 1
+            ;;
+        esac
+        echo "OFFICIAL_BRANCH=$OFFICIAL_BRANCH" >> $GITHUB_ENV
+        echo "USER_BRANCH=$USER_BRANCH" >> $GITHUB_ENV
+
+    - name: Clone Source Code
+      run: |
+        git clone "$REPO_URL" -b "$OFFICIAL_BRANCH" openwrt
+        cd openwrt
+        echo "OPENWRT_PATH=$PWD" >> $GITHUB_ENV
+
+    - name: Apply Device Patches
+      run: |
+        chmod +x $GITHUB_WORKSPACE/diy-part1.sh
+        cd $OPENWRT_PATH
+        $GITHUB_WORKSPACE/diy-part1.sh "$USER_BRANCH"
+
+    - name: Generate Variables
+      run: |
+        echo "SOURCE_REPO=immortalwrt" >> $GITHUB_ENV
+        echo "RELEASE_TAG=XG-040G-MD-$(date +"%Y%m%d")-${{ github.run_number }}" >> $GITHUB_ENV
+
+    - name: Cache Toolchain
+      if: env.CACHE_TOOLCHAIN == 'true'
+      uses: HiGarfield/cachewrtbuild@main
+      with:
+        ccache: false
+        mixkey: ${{ env.SOURCE_REPO }}-${{ env.OFFICIAL_BRANCH }}-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}
+        prefix: ${{ env.OPENWRT_PATH }}
+
+    - name: Install Feeds
+      run: |
+        cd $OPENWRT_PATH
+        ./scripts/feeds update -a
+        ./scripts/feeds install -a
+
+    - name: Load Custom Configuration
+      run: |
+        cd $OPENWRT_PATH
+        cp $GITHUB_WORKSPACE/seed.config .config
+        make defconfig
+
+    - name: Download DL Package
+      run: |
+        cd $OPENWRT_PATH
+        make download -j8
+        find dl -size -1024c -delete
+
+    - name: Compile Firmware
+      id: compile
+      run: |
+        cd $OPENWRT_PATH
+        make -j$(nproc) || make -j1 || make -j1 V=s
+        echo "status=success" >> $GITHUB_OUTPUT
+
+    - name: Organize Files
+      if: steps.compile.outputs.status == 'success'
+      run: |
+        cd $OPENWRT_PATH/bin/targets/*/*
+        echo "VERSION_KERNEL=$(find -type f -name "*.manifest" -exec grep -oP '^kernel - \K.*?(?=~|-\d+-)' {} \;)" >> $GITHUB_ENV
+        cp $OPENWRT_PATH/.config build.config
+        echo "FIRMWARE_PATH=$PWD" >> $GITHUB_ENV
+
+    - name: Upload Firmware To Release
+      if: steps.compile.outputs.status == 'success' && env.FIRMWARE_RELEASE == 'true'
+      uses: ncipollo/release-action@v1
+      with:
+        name: ${{ env.RELEASE_TAG }}
+        tag: ${{ env.RELEASE_TAG }}
+        token: ${{ secrets.GITHUB_TOKEN }}
+        artifacts: ${{ env.FIRMWARE_PATH }}/*
+        body: |
+          **XG-040G-MD Firmware**
+          分支: ${{ env.USER_BRANCH }} (官方 ${{ env.OFFICIAL_BRANCH }})
+          内核版本: ${{ env.VERSION_KERNEL }}
