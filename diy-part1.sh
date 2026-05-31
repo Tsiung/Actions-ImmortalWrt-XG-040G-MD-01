@@ -1,9 +1,10 @@
 #!/bin/bash
 PATCHES_DIR="$GITHUB_WORKSPACE/patches"
-USER_BRANCH="$1"   # 例如 master-XG-040G-MD 或 openwrt-25.12-XG-040G-MD
+USER_BRANCH="$1"
 
 echo "用户选择分支: $USER_BRANCH"
 
+# 1. 根据分支选择补丁文件
 if [ "$USER_BRANCH" = "master-XG-040G-MD" ]; then
     PATCH_FILE="$PATCHES_DIR/airoha-en7581-support-master.patch"
 elif [ "$USER_BRANCH" = "openwrt-25.12-XG-040G-MD" ]; then
@@ -13,6 +14,17 @@ else
     exit 0
 fi
 
+# 2. 添加 OpenClash feed（如果尚未添加）
+FEEDS_CONF="feeds.conf.default"
+if [ ! -f "$FEEDS_CONF" ]; then
+    touch "$FEEDS_CONF"
+fi
+if ! grep -q "openclash" "$FEEDS_CONF"; then
+    echo "src-git openclash https://github.com/vernesong/OpenClash.git" >> "$FEEDS_CONF"
+    echo "OpenClash feed added."
+fi
+
+# 3. 应用设备补丁
 if [ -f "$PATCH_FILE" ]; then
     echo "正在应用补丁: $PATCH_FILE"
     patch -p1 < "$PATCH_FILE"
