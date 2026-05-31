@@ -43,24 +43,41 @@ jobs:
     - name: Checkout
       uses: actions/checkout@main
 
-    - name: Clone Source Code
-      env:
-        REPO_BRANCH: ${{ github.event.inputs.repo_branch }}
+    - name: Set branch mapping
+      id: branch_map
       run: |
-        git clone "$REPO_URL" -b "$REPO_BRANCH" openwrt
+        USER_BRANCH="${{ github.event.inputs.repo_branch }}"
+        case "$USER_BRANCH" in
+          master-XG-040G-MD)
+            OFFICIAL_BRANCH="master"
+            ;;
+          openwrt-25.12-XG-040G-MD)
+            OFFICIAL_BRANCH="openwrt-25.12"
+            ;;
+          *)
+            echo "未知分支: $USER_BRANCH"
+            exit 1
+            ;;
+        esac
+        echo "OFFICIAL_BRANCH=$OFFICIAL_BRANCH" >> $GITHUB_ENV
+        echo "USER_BRANCH=$USER_BRANCH" >> $GITHUB_ENV
+        echo "映射分支: $USER_BRANCH -> $OFFICIAL_BRANCH"
+
+    - name: Clone Source Code
+      run: |
+        git clone "$REPO_URL" -b "$OFFICIAL_BRANCH" openwrt
         cd openwrt
         echo "OPENWRT_PATH=$PWD" >> $GITHUB_ENV
-        echo "REPO_BRANCH=$REPO_BRANCH" >> $GITHUB_ENV
 
     - name: Apply Device Patches
       run: |
         cd $OPENWRT_PATH
-        bash $GITHUB_WORKSPACE/diy-part1.sh
+        # 传入用户选择的分支名（带 -XG-040G-MD 后缀），让 diy-part1.sh 据此选择补丁
+        bash $GITHUB_WORKSPACE/diy-part1.sh "$USER_BRANCH"
 
     - name: Generate Variables
       run: |
-        SOURCE_REPO="immortalwrt"
-        echo "SOURCE_REPO=$SOURCE_REPO" >> $GITHUB_ENV
+        echo "SOURCE_REPO=immortalwrt" >> $GITHUB_ENV
         echo "RELEASE_TAG=XG-040G-MD-$(date +"%Y%m%d")-${{ github.run_number }}" >> $GITHUB_ENV
 
     - name: Cache Toolchain
@@ -68,7 +85,7 @@ jobs:
       uses: HiGarfield/cachewrtbuild@main
       with:
         ccache: false
-        mixkey: ${{ env.SOURCE_REPO }}-${{ env.REPO_BRANCH }}-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}
+        mixkey: ${{ env.SOURCE_REPO }}-${{ env.OFFICIAL_BRANCH }}-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}
         prefix: ${{ env.OPENWRT_PATH }}
 
     - name: Install Feeds
@@ -114,5 +131,5 @@ jobs:
         artifacts: ${{ env.FIRMWARE_PATH }}/*
         body: |
           **XG-040G-MD Firmware**
-          分支: ${{ env.REPO_BRANCH }}
+          分支: ${{ env.USER_BRANCH }} (官方 ${{ env.OFFICIAL_BRANCH }})
           内核版本: ${{ env.VERSION_KERNEL }}
