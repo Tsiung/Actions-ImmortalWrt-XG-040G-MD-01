@@ -1,0 +1,183 @@
+name: XG-040G-MD Multi-Config Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      repo_branch:
+        description: '选择上游分支'
+        required: true
+        default: 'master'
+        type: choice
+        options:
+          - master
+          - openwrt-25.12
+
+env:
+  REPO_URL: https://github.com/immortalwrt/immortalwrt.git
+  DEVICE_TARGET: airoha
+  DEVICE_SUBTARGET: an7581
+  TZ: Asia/Shanghai
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        # 定义四个配置类型，对应 seed 文件和 Release 名称
+        include:
+          - config_type: base
+            seed_file: seed-01.config
+            release_suffix: Base
+          - config_type: openclash
+            seed_file: seed-02.config
+            release_suffix: OpenClash
+          - config_type: ksambd
+            seed_file: seed-03.config
+            release_suffix: OpenClash-P910nd-KSMBD
+          - config_type: samba4
+            seed_file: seed-04.config
+            release_suffix: OpenClash-P910nd-Samba4
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 初始化编译环境
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo bash -c 'bash <(curl -sL https://build-scripts.immortalwrt.org/init_build_environment.sh)'
+          sudo -E apt -yqq install dos2unix libfuse-dev
+          sudo timedatectl set-timezone "$TZ"
+
+      - name: 扩展磁盘空间
+        uses: easimon/maximize-build-space@master
+        with:
+          swap-size-mb: 1024
+          temp-reserve-mb: 100
+          root-reserve-mb: 1024
+
+      - name: 检出当前仓库（存放 seed 文件和补丁脚本）
+        uses: actions/checkout@v4
+
+      - name: 设置分支映射
+        id: branch_map
+        run: |
+          USER_BRANCH_INPUT="${{ github.event.inputs.repo_branch }}"
+          case "$USER_BRANCH_INPUT" in
+            master)
+              OFFICIAL_BRANCH="master"
+              USER_BRANCH="master-XG-040G-MD"
+              ;;
+            openwrt-25.12)
+              OFFICIAL_BRANCH="openwrt-25.12"
+              USER_BRANCH="openwrt-25.12-XG-040G-MD"
+              ;;
+            *)
+              echo "未知分支"
+              exit 1
+              ;;
+          esac
+          echo "OFFICIAL_BRANCH=$OFFICIAL_BRANCH" >> $GITHUB_ENV
+          echo "USER_BRANCH=$USER_BRANCH" >> $GITHUB_ENV
+
+      - name: 克隆 ImmortalWrt 源码
+        run: |
+          git clone "$REPO_URL" -b "$OFFICIAL_BRANCH" openwrt
+          echo "OPENWRT_PATH=$PWD/openwrt" >> $GITHUB_ENV
+
+      - name: 应用设备补丁
+        run: |
+          chmod +x $GITHUB_WORKSPACE/diy-part1.sh
+          cd $OPENWRT_PATH
+          $GITHUB_WORKSPACE/diy-part1.sh "$USER_BRANCH"
+
+      - name: 生成编译日期及标签变量
+        run: |
+          BUILD_DATE=$(TZ=Asia/Shanghai date +"%Y%m%d")
+          BUILD_TIME=$(TZ=Asia/Shanghai date +"%Y-%m-%d %H:%M:%S")
+          echo "BUILD_DATE=$BUILD_DATE" >> $GITHUB_ENV
+          echo "BUILD_TIME=$BUILD_TIME" >> $GITHUB_ENV
+          # 为每个配置生成独立的 Release 标签
+          RELEASE_TAG_BASE="XG-040G-MD-${{ matrix.release_suffix }}-${BUILD_DATE}-${{ github.run_number }}"
+          echo "RELEASE_TAG=$RELEASE_TAG_BASE" >> $GITHUB_ENV
+
+      - name: 加载对应种子配置
+        run: |
+          cd $OPENWRT_PATH
+          cp $GITHUB_WORKSPACE/${{ matrix.seed_file }} .config
+          make defconfig
+
+      - name: 恢复 DL 缓存（只读，加速下载）
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.OPENWRT_PATH }}/dl
+          key: dl-${{ env.OFFICIAL_BRANCH }}-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}
+          restore-keys: |
+            dl-${{ env.OFFICIAL_BRANCH }}-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}
+
+      - name: 下载软件包
+        run: |
+          cd $OPENWRT_PATH
+          make download -j8
+          find dl -size -1024c -delete
+
+      - name: 编译固件
+        id: compile
+        run: |
+          cd $OPENWRT_PATH
+          make -j$(nproc) || make -j1 V=s
+          echo "status=success" >> $GITHUB_OUTPUT
+
+      - name: 整理产物
+        if: steps.compile.outputs.status == 'success'
+        run: |
+          cd $OPENWRT_PATH/bin/targets/*/*
+          # 提取内核版本
+          VERSION_KERNEL=$(find -type f -name "*.manifest" -exec grep -oP '^kernel - \K.*?(?=~|-\d+-)' {} \; | head -1)
+          echo "VERSION_KERNEL=$VERSION_KERNEL" >> $GITHUB_ENV
+          # 复制 .config 作为构建信息
+          cp $OPENWRT_PATH/.config build.config
+          echo "FIRMWARE_PATH=$PWD" >> $GITHUB_ENV
+
+      - name: 发布固件到独立 Release
+        if: steps.compile.outputs.status == 'success'
+        uses: ncipollo/release-action@v1
+        with:
+          name: XG-040G-MD-${{ matrix.release_suffix }}-${{ env.BUILD_DATE }}
+          tag: ${{ env.RELEASE_TAG }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          artifacts: ${{ env.FIRMWARE_PATH }}/*.bin,${{ env.FIRMWARE_PATH }}/*.manifest,${{ env.FIRMWARE_PATH }}/build.config
+          body: |
+            ## XG-040G-MD ImmortalWrt 固件 (${{ matrix.release_suffix }})
+            
+            ### 📦 构建信息
+            | 项目 | 内容 |
+            |------|------|
+            | **设备型号** | XG-040G-MD |
+            | **目标平台** | ${{ env.DEVICE_TARGET }}/${{ env.DEVICE_SUBTARGET }} |
+            | **配置类型** | ${{ matrix.release_suffix }} |
+            | **上游分支** | ${{ env.OFFICIAL_BRANCH }} |
+            | **源码仓库** | [immortalwrt/immortalwrt](https://github.com/immortalwrt/immortalwrt) |
+            | **补丁来源** | [fzs209/immortalwrt](https://github.com/fzs209/immortalwrt) |
+            | **编译时间** | ${{ env.BUILD_TIME }} |
+            | **内核版本** | ${{ env.VERSION_KERNEL }} |
+            
+            ### 🗂️ 文件说明
+            - `*-squashfs-sysupgrade.bin` → 在已有 OpenWrt/ImmortalWrt 中升级
+            - `*-squashfs-factory.bin` → 从原厂系统首次刷机
+            - `build.config` → 本次编译使用的完整配置文件
+            
+            ### 🔐 默认信息
+            | 项目 | 默认值 |
+            |------|--------|
+            | **管理地址** | 192.168.1.1 |
+            | **用户名** | root |
+            | **密码** | *无（首次登录后请务必设置）* |
+            
+            ### ⚠️ 注意事项
+            - 刷机前请核对设备型号，错误固件可能导致变砖。
+            - 建议在刷机前备份原厂固件和重要数据。
+            - 本固件为自动编译生成，请仔细核对文件完整性。
+            
+            ---
+            *由 GitHub Actions 自动构建 | Release ${{ env.RELEASE_TAG }}*
