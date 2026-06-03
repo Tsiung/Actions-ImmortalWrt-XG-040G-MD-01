@@ -8,14 +8,11 @@ on:
         required: true
         default: 'base'
         type: string
-      # ========== 调试模式开关 ==========
-      # 开启后只会编译用户选择的第一个配置（忽略其他配置），用于快速测试
       debug_mode:
-        description: '调试模式（仅编译第一个配置，输出详细日志）'
+        description: '调试模式（仅编译第一个匹配的配置，用于快速测试）'
         required: false
         default: false
         type: boolean
-      # =================================
 
 env:
   REPO_URL: https://github.com/wina8201/immortalwrt.git
@@ -29,50 +26,65 @@ jobs:
       fail-fast: false
       max-parallel: 4
       matrix:
+        # 固定两个分支
         branch: [master, openwrt-25.12]
-        # 动态生成配置列表（根据用户输入和调试模式过滤）
-        config: ${{ fromJSON(
-          # 定义所有配置的映射
-          '[' +
-            (contains(github.event.inputs.configs, 'base') && '{"seed":"seed-01.config","suffix":"Base","desc":"基础功能"},' || '') +
-            (contains(github.event.inputs.configs, 'openclash') && '{"seed":"seed-02.config","suffix":"OpenClash","desc":"基础功能 + OpenClash"},' || '') +
-            (contains(github.event.inputs.configs, 'ksmbd') && '{"seed":"seed-03.config","suffix":"OpenClash-KSMBD","desc":"基础功能 + OpenClash + KSMBD文件共享"},' || '') +
-            (contains(github.event.inputs.configs, 'cups') && '{"seed":"seed-04.config","suffix":"OpenClash-CUPS","desc":"基础功能 + OpenClash + CUPS打印机共享"},' || '') +
-            (contains(github.event.inputs.configs, 'full') && '{"seed":"seed-05.config","suffix":"OpenClash-KSMBD-CUPS","desc":"基础功能 + OpenClash + KSMBD文件共享 + CUPS打印机共享"},' || '')
-          + ']' | rtrimstr(',') + ']'
-        ) }}
-    # ========== 调试模式：只保留列表中的第一个配置 ==========
-    # 若开启调试模式，则覆盖 matrix.config 为仅包含第一个元素
-    # 使用 if 条件无法动态修改 matrix，但可以通过在 job 中设置输出变量并在后续步骤中使用
-    # 这里采用更简单的方法：在第一步中判断并退出多余配置（不推荐），或者使用 include 条件过滤
-    # 由于 matrix 在 job 开始前就已确定，无法动态修改。改用下一步中的条件跳过部分任务。
-    # 因此调试模式的实现改为：在后续每个任务的开头检查是否为第一个配置，如果不是则快速退出。
-    # 这样不会浪费太多资源，且代码清晰。
+        # 静态定义所有可能的配置（不再动态生成 JSON）
+        config:
+          - { seed: "seed-01.config", suffix: "Base", desc: "基础功能", tag: "base" }
+          - { seed: "seed-02.config", suffix: "OpenClash", desc: "基础功能 + OpenClash", tag: "openclash" }
+          - { seed: "seed-03.config", suffix: "OpenClash-KSMBD", desc: "基础功能 + OpenClash + KSMBD文件共享", tag: "ksmbd" }
+          - { seed: "seed-04.config", suffix: "OpenClash-CUPS", desc: "基础功能 + OpenClash + CUPS打印机共享", tag: "cups" }
+          - { seed: "seed-05.config", suffix: "OpenClash-KSMBD-CUPS", desc: "基础功能 + OpenClash + KSMBD文件共享 + CUPS打印机共享", tag: "full" }
+
     runs-on: ubuntu-latest
     steps:
-      # ========== 调试模式：如果不是第一个配置则直接退出 ==========
-      - name: 调试模式检查
-        if: github.event.inputs.debug_mode == 'true'
+      # ==================== 条件过滤：只运行用户选择的配置 ====================
+      - name: 检查当前配置是否被用户选中
+        id: filter
         run: |
-          # 获取当前配置在列表中的序号（依赖矩阵顺序）
-          # 由于 matrix.config 是动态生成的，我们通过比较当前配置的 suffix 是否等于第一个配置的 suffix
-          FIRST_CONFIG_SUFFIX="${{ fromJSON('[' + (
-            (contains(github.event.inputs.configs, 'base') && '"Base",' || '') +
-            (contains(github.event.inputs.configs, 'openclash') && '"OpenClash",' || '') +
-            (contains(github.event.inputs.configs, 'ksmbd') && '"OpenClash-KSMBD",' || '') +
-            (contains(github.event.inputs.configs, 'cups') && '"OpenClash-CUPS",' || '') +
-            (contains(github.event.inputs.configs, 'full') && '"OpenClash-KSMBD-CUPS",' || '')
-          ) | rtrimstr(',') + ']')[0] }}"
-          CURRENT_SUFFIX="${{ matrix.config.suffix }}"
-          if [ "$CURRENT_SUFFIX" != "$FIRST_CONFIG_SUFFIX" ]; then
-            echo "调试模式已开启，跳过非第一个配置: $CURRENT_SUFFIX"
-            exit 0  # 正常退出，不执行后续编译
-          else
-            echo "调试模式：保留第一个配置 $CURRENT_SUFFIX"
+          SELECTED="${{ github.event.inputs.configs }}"
+          TAG="${{ matrix.config.tag }}"
+          DEBUG="${{ github.event.inputs.debug_mode }}"
+
+          # 将逗号分隔的字符串转为空格分隔的数组
+          IFS=',' read -ra SELECTED_ARRAY <<< "$SELECTED"
+          SELECTED_TAGS="${SELECTED_ARRAY[@]}"
+
+          # 检查当前 tag 是否在选中列表中
+          MATCH=0
+          for s in "${SELECTED_ARRAY[@]}"; do
+            if [ "$s" = "$TAG" ]; then
+              MATCH=1
+              break
+            fi
+          done
+
+          if [ $MATCH -eq 0 ]; then
+            echo "当前配置 $TAG 未被用户选中，跳过"
+            echo "skip=true" >> $GITHUB_OUTPUT
+            exit 0
           fi
-      # ========================================================
+
+          # 调试模式：只保留第一个匹配的配置
+          if [ "$DEBUG" = "true" ]; then
+            # 获取选中列表中的第一个 tag
+            FIRST_TAG="${SELECTED_ARRAY[0]}"
+            if [ "$TAG" != "$FIRST_TAG" ]; then
+              echo "调试模式开启，且当前配置 $TAG 不是第一个匹配的配置，跳过"
+              echo "skip=true" >> $GITHUB_OUTPUT
+              exit 0
+            else
+              echo "调试模式：保留第一个匹配的配置 $TAG"
+            fi
+          fi
+
+          echo "skip=false" >> $GITHUB_OUTPUT
+
+      # 如果 skip=true，则后续所有步骤都不会执行（通过条件判断）
+      # ===================================================================
 
       - name: 初始化编译环境
+        if: steps.filter.outputs.skip != 'true'
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
@@ -81,6 +93,7 @@ jobs:
           sudo timedatectl set-timezone "$TZ"
 
       - name: 扩展磁盘空间
+        if: steps.filter.outputs.skip != 'true'
         uses: easimon/maximize-build-space@master
         with:
           swap-size-mb: 1024
@@ -88,20 +101,24 @@ jobs:
           root-reserve-mb: 1024
 
       - name: 检出当前仓库（存放 seed 文件）
+        if: steps.filter.outputs.skip != 'true'
         uses: actions/checkout@v4
 
       - name: 克隆 ImmortalWrt 源码（指定分支）
+        if: steps.filter.outputs.skip != 'true'
         run: |
           git clone --depth 1 "$REPO_URL" -b "${{ matrix.branch }}" openwrt
           echo "OPENWRT_PATH=$PWD/openwrt" >> $GITHUB_ENV
 
-      - name: 获取源码分支长标识（commit hash）
+      - name: 获取源码分支唯一标识（commit hash）
+        if: steps.filter.outputs.skip != 'true'
         run: |
           cd $OPENWRT_PATH
           COMMIT_HASH=$(git rev-parse --short HEAD)
           echo "COMMIT_HASH=$COMMIT_HASH" >> $GITHUB_ENV
 
       - name: 生成构建日期及变量
+        if: steps.filter.outputs.skip != 'true'
         run: |
           BUILD_DATE=$(TZ=Asia/Shanghai date +"%Y%m%d")
           BUILD_TIME=$(TZ=Asia/Shanghai date +"%Y-%m-%d %H:%M:%S")
@@ -111,12 +128,14 @@ jobs:
           echo "RELEASE_TAG=$RELEASE_TAG" >> $GITHUB_ENV
 
       - name: 加载对应种子配置
+        if: steps.filter.outputs.skip != 'true'
         run: |
           cd $OPENWRT_PATH
           cp $GITHUB_WORKSPACE/${{ matrix.config.seed }} .config
           make defconfig
 
       - name: 恢复 DL 缓存
+        if: steps.filter.outputs.skip != 'true'
         uses: actions/cache@v4
         with:
           path: ${{ env.OPENWRT_PATH }}/dl
@@ -125,23 +144,22 @@ jobs:
             dl-${{ matrix.branch }}-
 
       - name: 更新 feeds 并安装软件包（基础）
+        if: steps.filter.outputs.skip != 'true'
         run: |
           cd $OPENWRT_PATH
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-      # ========== 自定义打印软件包源（仅 CUPS 配置需要） ==========
       - name: 添加自定义打印软件包源（仅 CUPS 配置）
-        if: contains(matrix.config.desc, 'CUPS')
+        if: steps.filter.outputs.skip != 'true' && contains(matrix.config.desc, 'CUPS')
         run: |
           cd $OPENWRT_PATH
           git clone --depth=1 https://github.com/master-0123/openwrt-printing-packages package/printing-packages
-          # 重新更新 feeds 以包含新包
           ./scripts/feeds update -a
           ./scripts/feeds install -a
-      # ========================================================
 
       - name: 下载软件包
+        if: steps.filter.outputs.skip != 'true'
         run: |
           cd $OPENWRT_PATH
           make download -j8
@@ -149,13 +167,14 @@ jobs:
 
       - name: 编译固件
         id: compile
+        if: steps.filter.outputs.skip != 'true'
         run: |
           cd $OPENWRT_PATH
           make -j$(nproc) || make -j1 V=s
           echo "status=success" >> $GITHUB_OUTPUT
 
       - name: 整理产物
-        if: steps.compile.outputs.status == 'success'
+        if: steps.filter.outputs.skip != 'true' && steps.compile.outputs.status == 'success'
         run: |
           cd $OPENWRT_PATH/bin/targets/*/*
           VERSION_KERNEL=$(find -type f -name "*.manifest" -exec grep -oP '^kernel - \K.*?(?=~|-\d+-)' {} \; | head -1)
@@ -164,7 +183,7 @@ jobs:
           echo "FIRMWARE_PATH=$PWD" >> $GITHUB_ENV
 
       - name: 发布固件到独立 Release
-        if: steps.compile.outputs.status == 'success'
+        if: steps.filter.outputs.skip != 'true' && steps.compile.outputs.status == 'success'
         uses: ncipollo/release-action@v1
         with:
           name: XG-040G-MD-${{ matrix.branch }}-${{ matrix.config.suffix }}-${{ env.BUILD_DATE }}
