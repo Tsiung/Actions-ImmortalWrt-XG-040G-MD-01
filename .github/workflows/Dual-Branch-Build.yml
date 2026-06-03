@@ -28,15 +28,15 @@ on:
 env:
   DEVICE_NAME: XG-040G-MD
   SOURCE_REPO: https://github.com/wina8201/immortalwrt
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true   # 强制使用 Node.js 24
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   matrix-generate:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
     steps:
-      - uses: actions/checkout@v4          # 升级到 v4
+      - uses: actions/checkout@v4.2.2
       - id: set-matrix
         run: |
           SCOPE="${{ github.event.inputs.scope }}"
@@ -51,12 +51,12 @@ jobs:
 
   build:
     needs: matrix-generate
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     timeout-minutes: 360
     strategy:
       matrix: ${{ fromJSON(needs.matrix-generate.outputs.matrix) }}
     steps:
-      - uses: actions/checkout@v4          # 升级到 v4
+      - uses: actions/checkout@v4.2.2
 
       - name: Free disk space
         run: |
@@ -67,10 +67,9 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential ccache ecj fastjar file g++ gawk \
-          gettext git java-propose-classpath libelf-dev libncurses5-dev \
-          libncursesw5-dev libssl-dev python3 python3-distutils python3-setuptools \
-          rsync subversion swig time u-boot-tools unzip wget xsltproc zlib1g-dev \
+          sudo apt-get install -y build-essential ccache file g++ gawk gettext git \
+          libelf-dev libncurses-dev libssl-dev python3 python3-setuptools \
+          rsync subversion swig time unzip wget xsltproc zlib1g-dev \
           libfuse-dev
 
       - name: Set up variables
@@ -108,7 +107,7 @@ jobs:
             cp $GITHUB_WORKSPACE/${cfg}.config .config
             make defconfig
 
-            # 下载依赖（单线程，避免并发问题）
+            # 下载依赖（单线程，稳定）
             make download -j1 V=s
             # 编译，若失败打印完整日志
             make -j$(nproc) V=s 2>&1 | tee build.log || {
