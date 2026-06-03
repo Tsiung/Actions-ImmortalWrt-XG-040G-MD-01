@@ -1,4 +1,4 @@
-name: Build ImmortalWrt for XG-040G-MD
+name: XG-040G-MD Dual-Branch-Build-02
 
 on:
   workflow_dispatch:
