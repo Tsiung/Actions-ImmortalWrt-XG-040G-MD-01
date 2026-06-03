@@ -1,3 +1,112 @@
+name: Build ImmortalWrt for XG-040G-MD (Multi-Branch)
+
+on:
+  workflow_dispatch:
+    inputs:
+      scope:
+        description: '编译范围'
+        required: true
+        default: 'all_branches'
+        type: choice
+        options:
+          - all_branches
+          - master_only
+          - 25.12_only
+      config:
+        description: '选择配置'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - seed-01
+          - seed-02
+          - seed-03
+          - seed-04
+          - seed-05
+
+env:
+  REPO_URL: https://github.com/wina8201/immortalwrt.git
+  DEVICE_NAME: XG-040G-MD
+  TZ: Asia/Shanghai
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  matrix-generate:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: set-matrix
+        run: |
+          SCOPE="${{ github.event.inputs.scope }}"
+          if [ "$SCOPE" = "all_branches" ]; then
+            BRANCHES='["master-XG-040G-MD", "openwrt-25.12-XG-040G-MD"]'
+          elif [ "$SCOPE" = "master_only" ]; then
+            BRANCHES='["master-XG-040G-MD"]'
+          else
+            BRANCHES='["openwrt-25.12-XG-040G-MD"]'
+          fi
+          echo "matrix={\"branch\": $BRANCHES}" >> $GITHUB_OUTPUT
+
+  build:
+    needs: matrix-generate
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      matrix: ${{ fromJSON(needs.matrix-generate.outputs.matrix) }}
+    steps:
+      - name: Initialization Environment
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo bash -c 'bash <(curl -sL https://build-scripts.immortalwrt.org/init_build_environment.sh)'
+          sudo -E apt -yqq install dos2unix libfuse-dev
+          sudo timedatectl set-timezone "$TZ"
+
+      - name: Combine Disks
+        uses: easimon/maximize-build-space@master
+        with:
+          swap-size-mb: 1024
+          temp-reserve-mb: 100
+          root-reserve-mb: 1024
+
+      - name: Checkout Actions repo
+        uses: actions/checkout@v4
+
+      - name: Set up variables
+        id: vars
+        run: |
+          echo "DATE=$(date +%Y%m%d)" >> $GITHUB_ENV
+          echo "BRANCH=${{ matrix.branch }}" >> $GITHUB_ENV
+          SHORT_BRANCH=$(echo "${{ matrix.branch }}" | sed 's/-XG-040G-MD//')
+          echo "BRANCH_SHORT=$SHORT_BRANCH" >> $GITHUB_ENV
+          if [ "${{ github.event.inputs.config }}" = "all" ]; then
+            CONFIGS="seed-01 seed-02 seed-03 seed-04 seed-05"
+          else
+            CONFIGS="${{ github.event.inputs.config }}"
+          fi
+          echo "CONFIGS=$CONFIGS" >> $GITHUB_ENV
+
+      - name: Clone Source Code
+        run: |
+          git clone "$REPO_URL" -b "${{ env.BRANCH }}" openwrt
+          cd openwrt
+          echo "SOURCE_COMMIT=$(git rev-parse HEAD)" >> $GITHUB_ENV
+          echo "OPENWRT_PATH=$PWD" >> $GITHUB_ENV
+
+      - name: Install Feeds and Printing Packages
+        run: |
+          cd $OPENWRT_PATH
+          sed -i -e '$a\' feeds.conf.default
+          echo "src-git cups https://github.com/fengchen-github/openwrt-cups.git" >> feeds.conf.default
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+          # 追加安装缺失依赖包
+          ./scripts/feeds install shadow-newuidmap shadow-newgidmap python3-pysocks python3-unidecode
+          git clone --depth=1 https://gitee.com/master0123/openwrt-printing-packages.git package/printing-packages
+
       - name: Build all configs
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -10,7 +119,8 @@
             rm -f .config .config.old
             cp $GITHUB_WORKSPACE/${cfg}.config .config
             export TERM=dumb
-            make defconfig
+            # make defconfig
+            ./scripts/config/conf --defconfig=.config
 
             make download -j8
             find dl -size -1024c -delete
@@ -44,38 +154,38 @@
             fi
 
             cat > $GITHUB_WORKSPACE/release.md <<EOF
-### 📦 构建信息
-| 项目 | 内容 |
-|------|------|
-| **设备型号** | ${DEVICE_NAME} |
-| **目标平台** | ${TARGET_BOARD} |
-| **源码分支** | ${{ env.BRANCH }} (${SOURCE_COMMIT}) |
-| **配置类型** | ${CONFIG_DESC} |
-| **源码来源** | https://github.com/wina8201/immortalwrt (forked from fzs209/immortalwrt) |
-| **编译时间** | ${DATE} |
-| **内核版本** | ${KERNEL_VER} |
+          ### 📦 构建信息
+          | 项目 | 内容 |
+          |------|------|
+          | **设备型号** | ${DEVICE_NAME} |
+          | **目标平台** | ${TARGET_BOARD} |
+          | **源码分支** | ${{ env.BRANCH }} (${SOURCE_COMMIT}) |
+          | **配置类型** | ${CONFIG_DESC} |
+          | **源码来源** | https://github.com/wina8201/immortalwrt (forked from fzs209/immortalwrt) |
+          | **编译时间** | ${DATE} |
+          | **内核版本** | ${KERNEL_VER} |
 
-### 🗂️ 文件说明
-- \`*-squashfs-sysupgrade.bin\` → 在已有 OpenWrt/ImmortalWrt 中升级使用
-- \`*-squashfs-factory.bin\` → 从uboot首次刷机使用
-- \`build.config\` → 本次编译使用的完整配置文件
+          ### 🗂️ 文件说明
+          - \`*-squashfs-sysupgrade.bin\` → 在已有 OpenWrt/ImmortalWrt 中升级使用
+          - \`*-squashfs-factory.bin\` → 从uboot首次刷机使用
+          - \`build.config\` → 本次编译使用的完整配置文件
 
-### 🔐 默认信息
-| 项目 | 默认值 |
-|------|--------|
-| **管理地址** | 192.168.1.1 |
-| **用户名** | root |
-| **密码** | *无（首次登录后请务必设置）* |
+          ### 🔐 默认信息
+          | 项目 | 默认值 |
+          |------|--------|
+          | **管理地址** | 192.168.1.1 |
+          | **用户名** | root |
+          | **密码** | *无（首次登录后请务必设置）* |
 
-### ⚠️ 注意事项
-- 刷机前请务必核对设备型号，错误固件可能导致变砖。
-- 建议在刷机前备份原厂固件和重要数据。
-- 若固件内集成第三方插件，其安全性请自行评估。
-- 本固件为自动编译生成，请仔细核对文件完整性后再刷写。
-${NOTES_EXTRA}
----
-*由 GitHub Actions 自动构建 | Release ${TAG_NAME}*
-EOF
+          ### ⚠️ 注意事项
+          - 刷机前请务必核对设备型号，错误固件可能导致变砖。
+          - 建议在刷机前备份原厂固件和重要数据。
+          - 若固件内集成第三方插件，其安全性请自行评估。
+          - 本固件为自动编译生成，请仔细核对文件完整性后再刷写。
+          ${NOTES_EXTRA}
+          ---
+          *由 GitHub Actions 自动构建 | Release ${TAG_NAME}*
+          EOF
 
             cp $OPENWRT_PATH/.config build.config
 
