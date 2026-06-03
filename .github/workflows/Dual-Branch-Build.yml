@@ -1,1 +1,204 @@
-#
+name: Build ImmortalWrt for XG-040G-MD (Multi-Branch)
+
+on:
+  workflow_dispatch:
+    inputs:
+      scope:
+        description: '编译范围'
+        required: true
+        default: 'all_branches'
+        type: choice
+        options:
+          - all_branches
+          - master_only
+          - 25.12_only
+      config:
+        description: '选择配置'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - seed-01
+          - seed-02
+          - seed-03
+          - seed-04
+          - seed-05
+
+env:
+  REPO_URL: https://github.com/wina8201/immortalwrt.git
+  DEVICE_NAME: XG-040G-MD
+  TZ: Asia/Shanghai
+
+jobs:
+  matrix-generate:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: set-matrix
+        run: |
+          SCOPE="${{ github.event.inputs.scope }}"
+          if [ "$SCOPE" = "all_branches" ]; then
+            BRANCHES='["master-XG-040G-MD", "openwrt-25.12-XG-040G-MD"]'
+          elif [ "$SCOPE" = "master_only" ]; then
+            BRANCHES='["master-XG-040G-MD"]'
+          else
+            BRANCHES='["openwrt-25.12-XG-040G-MD"]'
+          fi
+          echo "matrix={\"branch\": $BRANCHES}" >> $GITHUB_OUTPUT
+
+  build:
+    needs: matrix-generate
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      matrix: ${{ fromJSON(needs.matrix-generate.outputs.matrix) }}
+    steps:
+      - name: Initialization Environment
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo bash -c 'bash <(curl -sL https://build-scripts.immortalwrt.org/init_build_environment.sh)'
+          sudo -E apt -yqq install dos2unix libfuse-dev
+          sudo timedatectl set-timezone "$TZ"
+
+      - name: Combine Disks
+        uses: easimon/maximize-build-space@master
+        with:
+          swap-size-mb: 1024
+          temp-reserve-mb: 100
+          root-reserve-mb: 1024
+
+      - name: Checkout Actions repo
+        uses: actions/checkout@v4
+
+      - name: Set up variables
+        id: vars
+        run: |
+          echo "DATE=$(date +%Y%m%d)" >> $GITHUB_ENV
+          echo "BRANCH=${{ matrix.branch }}" >> $GITHUB_ENV
+          # 提取短分支名用于 Release Tag（如 master-XG-040G-MD → master）
+          SHORT_BRANCH=$(echo "${{ matrix.branch }}" | sed 's/-XG-040G-MD//')
+          echo "BRANCH_SHORT=$SHORT_BRANCH" >> $GITHUB_ENV
+          if [ "${{ github.event.inputs.config }}" = "all" ]; then
+            CONFIGS="seed-01 seed-02 seed-03 seed-04 seed-05"
+          else
+            CONFIGS="${{ github.event.inputs.config }}"
+          fi
+          echo "CONFIGS=$CONFIGS" >> $GITHUB_ENV
+
+      - name: Clone Source Code
+        run: |
+          git clone "$REPO_URL" -b "${{ env.BRANCH }}" openwrt
+          cd openwrt
+          echo "SOURCE_COMMIT=$(git rev-parse HEAD)" >> $GITHUB_ENV
+          # 加入 CUPS 相关包
+          git clone --depth=1 https://github.com/master-0123/openwrt-printing-packages package/printing-packages
+          echo "OPENWRT_PATH=$PWD" >> $GITHUB_ENV
+
+      - name: Install Feeds
+        run: |
+          cd $OPENWRT_PATH
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: Build all configs
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          CONFIG_LIST="${{ env.CONFIGS }}"
+          for cfg in $CONFIG_LIST; do
+            echo "========== Building ${{ env.BRANCH }} - $cfg =========="
+
+            cd $OPENWRT_PATH
+            make clean
+            rm -f .config .config.old
+            cp $GITHUB_WORKSPACE/${cfg}.config .config
+            make defconfig
+
+            make download -j8
+            find dl -size -1024c -delete
+
+            make -j$(nproc) || make -j1 || make -j1 V=s
+
+            # 获取编译信息
+            KERNEL_VER=$(make kernelversion)
+            TARGET_BOARD=$(grep '^CONFIG_TARGET_BOARD=' .config | cut -d= -f2 | tr -d '"')
+            FIRMWARE_DIR=$(find bin/targets -type d -name "*-*-*" | head -1)
+            cd $FIRMWARE_DIR
+
+            # 功能标签映射
+            case $cfg in
+              seed-01) FEATURE="Base";;
+              seed-02) FEATURE="OpenClash";;
+              seed-03) FEATURE="OpenClash-KSMBD";;
+              seed-04) FEATURE="OpenClash-CUPS";;
+              seed-05) FEATURE="OpenClash-KSMBD-CUPS";;
+            esac
+
+            TAG_NAME="${DEVICE_NAME}-${{ env.BRANCH_SHORT }}-${FEATURE}-${DATE}"
+            echo "Preparing release: $TAG_NAME"
+
+            # 配置描述
+            CONFIG_DESC="基础功能"
+            [ "$cfg" != "seed-01" ] && CONFIG_DESC+=" OpenClash"
+            [[ "$cfg" == "seed-03" || "$cfg" == "seed-05" ]] && CONFIG_DESC+=" KSMBD文件共享"
+            [[ "$cfg" == "seed-04" || "$cfg" == "seed-05" ]] && CONFIG_DESC+=" CUPS打印机共享"
+
+            NOTES_EXTRA=""
+            if [[ "$cfg" == "seed-04" || "$cfg" == "seed-05" ]]; then
+              NOTES_EXTRA="- 本固件集成了CUPS打印服务，集成打印机驱动为 **Epson-inkjet-printer-escpr**，仅支持Epson喷墨打印机。"
+            fi
+
+            # 生成 Release 说明文件
+            cat > $GITHUB_WORKSPACE/release.md <<EOF
+          ### 📦 构建信息
+          | 项目 | 内容 |
+          |------|------|
+          | **设备型号** | ${DEVICE_NAME} |
+          | **目标平台** | ${TARGET_BOARD} |
+          | **源码分支** | ${{ env.BRANCH }} (${SOURCE_COMMIT}) |
+          | **配置类型** | ${CONFIG_DESC} |
+          | **源码来源** | https://github.com/wina8201/immortalwrt (forked from fzs209/immortalwrt) |
+          | **编译时间** | ${DATE} |
+          | **内核版本** | ${KERNEL_VER} |
+
+          ### 🗂️ 文件说明
+          - \`*-squashfs-sysupgrade.bin\` → 在已有 OpenWrt/ImmortalWrt 中升级使用
+          - \`*-squashfs-factory.bin\` → 从uboot首次刷机使用
+          - \`build.config\` → 本次编译使用的完整配置文件
+
+          ### 🔐 默认信息
+          | 项目 | 默认值 |
+          |------|--------|
+          | **管理地址** | 192.168.1.1 |
+          | **用户名** | root |
+          | **密码** | *无（首次登录后请务必设置）* |
+
+          ### ⚠️ 注意事项
+          - 刷机前请务必核对设备型号，错误固件可能导致变砖。
+          - 建议在刷机前备份原厂固件和重要数据。
+          - 若固件内集成第三方插件，其安全性请自行评估。
+          - 本固件为自动编译生成，请仔细核对文件完整性后再刷写。
+          ${NOTES_EXTRA}
+          ---
+          *由 GitHub Actions 自动构建 | Release ${TAG_NAME}*
+          EOF
+
+            # 拷贝 build.config
+            cp $OPENWRT_PATH/.config build.config
+
+            # 创建 Release（同名则先删除）
+            gh release delete "$TAG_NAME" -y --repo $GITHUB_REPOSITORY 2>/dev/null || true
+            git push origin :refs/tags/$TAG_NAME 2>/dev/null || true
+            gh release create "$TAG_NAME" \
+              --title "$TAG_NAME" \
+              --notes-file $GITHUB_WORKSPACE/release.md \
+              --repo $GITHUB_REPOSITORY \
+              *.bin build.config
+
+            # 返回 openwrt 目录继续下一个配置
+            cd $OPENWRT_PATH
+          done
