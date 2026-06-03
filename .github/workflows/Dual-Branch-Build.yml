@@ -94,7 +94,7 @@ jobs:
           cd openwrt
           echo "SOURCE_COMMIT=$(git rev-parse HEAD)" >> $GITHUB_ENV
           # 使用 Gitee 源克隆打印支持包（国内加速）
-          git clone --depth=1 https://gitee.com/master0123/openwrt-printing-packages.git package/printing-packages
+          # git clone --depth=1 https://gitee.com/master0123/openwrt-printing-packages.git package/printing-packages
           echo "OPENWRT_PATH=$PWD" >> $GITHUB_ENV
           
       - name: Install Feeds
