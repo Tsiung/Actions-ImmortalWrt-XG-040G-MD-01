@@ -17,18 +17,12 @@ on:
 env:
   REPO_URL: https://github.com/fzs209/immortalwrt.git
 jobs:
-  build:
+  pre:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      max-parallel: 10
-      matrix:
-        branch:
-          - master-XG-040G-MD
-          - openwrt-25.12-XG-040G-MD
+    outputs:
+      cfg_list: ${{ env.cfg }}
     steps:
-      - name: Set config list
-        id: setcfg
+      - name: Make Config Array
         run: |
           if [[ "${{ inputs.config_choice }}" == "all" ]];then
             echo "cfg=seed-01.config,seed-02.config,seed-03.config,seed-04.config,seed-05.config" >> $GITHUB_ENV
@@ -36,11 +30,9 @@ jobs:
             NAME=$(echo ${{ inputs.config_choice }} | cut -d: -f1)
             echo "cfg=${NAME}.config" >> $GITHUB_ENV
           fi
-    outputs:
-      cfg_list: ${{ env.cfg }}
 
-  compile:
-    needs: build
+  build:
+    needs: pre
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -49,7 +41,7 @@ jobs:
         branch:
           - master-XG-040G-MD
           - openwrt-25.12-XG-040G-MD
-        config: ${{ fromJson('["' + replace(needs.build.outputs.cfg_list, ',', '","') + '"]') }}
+        config: ${{ fromJson('["' + replace(needs.pre.outputs.cfg_list, ',', '","') + '"]') }}
     steps:
       - name: Checkout Actions Repository
         uses: actions/checkout@v4
@@ -125,7 +117,7 @@ jobs:
             ./*.config
 
   release:
-    needs: compile
+    needs: build
     runs-on: ubuntu-latest
     steps:
       - name: Download All Artifacts
@@ -172,8 +164,7 @@ jobs:
               CONFIG_DESC="未知配置"
               ;;
           esac
-
-cat > release_body.md << EOF
+cat > release_body.md <<'EOF'
 ### 📦 构建信息
 | 项目 | 内容 |
 |------|------|
@@ -186,9 +177,9 @@ cat > release_body.md << EOF
 | **内核版本** | master分支: 6.12 | openwrt-25.12分支: 6.6 |
 
 ### 🗂️ 文件说明
-- \`*-squashfs-sysupgrade.bin\` → 在已有 OpenWrt/ImmortalWrt 中升级使用
-- \`*-squashfs-factory.bin\` → 从uboot首次刷机使用
-- \`*build.config\` → 本次编译使用的完整配置文件
+- `*-squashfs-sysupgrade.bin` → 在已有 OpenWrt/ImmortalWrt 中升级使用
+- `*-squashfs-factory.bin` → 从uboot首次刷机使用
+- `*build.config` → 本次编译使用的完整配置文件
 
 ### 🔐 默认信息
 | 项目 | 默认值 |
@@ -203,14 +194,12 @@ cat > release_body.md << EOF
 - 若固件内集成第三方插件，其安全性请自行评估。
 - 本固件为自动编译生成，请仔细核对文件完整性后再刷写。
 EOF
-
           if [ "${HAS_CUPS}" = true ]; then
-cat >> release_body.md << EOF
+cat >> release_body.md <<'EOF'
 - 本固件集成的打印机驱动为Epson-inkjet-printer-escpr，仅支持对应型号的爱普生喷墨打印机。
 EOF
           fi
-
-cat >> release_body.md << EOF
+cat >> release_body.md <<'EOF'
 ---
 *由 GitHub Actions 自动构建 | Release XG-040G-MD-${DATE_TAG}*
 EOF
