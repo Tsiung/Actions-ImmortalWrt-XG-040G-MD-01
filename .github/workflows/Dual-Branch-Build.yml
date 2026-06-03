@@ -41,11 +41,11 @@ jobs:
         run: |
           SCOPE="${{ github.event.inputs.scope }}"
           if [ "$SCOPE" = "all_branches" ]; then
-            BRANCHES='["master", "25.12"]'
+            BRANCHES='["master-XG-040G-MD", "openwrt-25.12-XG-040G-MD"]'
           elif [ "$SCOPE" = "master_only" ]; then
-            BRANCHES='["master"]'
+            BRANCHES='["master-XG-040G-MD"]'
           else
-            BRANCHES='["25.12"]'
+            BRANCHES='["openwrt-25.12-XG-040G-MD"]'
           fi
           echo "matrix={\"branch\": $BRANCHES}" >> $GITHUB_OUTPUT
 
@@ -82,12 +82,26 @@ jobs:
             CONFIGS="${{ github.event.inputs.config }}"
           fi
           echo "CONFIGS=$CONFIGS" >> $GITHUB_ENV
-          echo "BRANCH=${{ matrix.branch }}" >> $GITHUB_ENV
+          FULL_BRANCH="${{ matrix.branch }}"
+          echo "BRANCH=$FULL_BRANCH" >> $GITHUB_ENV
+          # 提取短分支名，例如 master-XG-040G-MD → master
+          SHORT_BRANCH=$(echo "$FULL_BRANCH" | sed 's/-XG-040G-MD//')
+          echo "BRANCH_SHORT=$SHORT_BRANCH" >> $GITHUB_ENV
 
-      - name: Clone ImmortalWrt source
+      - name: Clone ImmortalWrt source (with branch fallback)
         run: |
-          git clone --depth=1 --branch ${{ env.BRANCH }} $SOURCE_REPO openwrt
+          git clone --depth=1 $SOURCE_REPO openwrt
           cd openwrt
+          DEFAULT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+          echo "Default branch: $DEFAULT_BRANCH"
+          if [ "$DEFAULT_BRANCH" != "${{ env.BRANCH }}" ]; then
+            echo "Fetching target branch ${{ env.BRANCH }}..."
+            git fetch --depth=1 origin ${{ env.BRANCH }}:${{ env.BRANCH }} || {
+              echo "Error: Branch '${{ env.BRANCH }}' does not exist in $SOURCE_REPO."
+              exit 1
+            }
+            git checkout ${{ env.BRANCH }}
+          fi
           echo "SOURCE_COMMIT=$(git rev-parse HEAD)" >> $GITHUB_ENV
           git clone --depth=1 https://github.com/master-0123/openwrt-printing-packages package/printing-packages
           ./scripts/feeds update -a
@@ -107,9 +121,7 @@ jobs:
             cp $GITHUB_WORKSPACE/${cfg}.config .config
             make defconfig
 
-            # 下载依赖（单线程，稳定）
             make download -j1 V=s
-            # 编译，若失败打印完整日志
             make -j$(nproc) V=s 2>&1 | tee build.log || {
               echo "❌ Build failed for ${{ env.BRANCH }}/$cfg"
               tail -n 200 build.log
@@ -128,7 +140,8 @@ jobs:
               seed-05) FEATURE="OpenClash-KSMBD-CUPS";;
             esac
 
-            TAG_NAME="${DEVICE_NAME}-${FEATURE}-${{ env.BRANCH }}-${DATE}"
+            # 修正：设备-短分支-功能-日期
+            TAG_NAME="${DEVICE_NAME}-${{ env.BRANCH_SHORT }}-${FEATURE}-${DATE}"
             echo "Preparing release: $TAG_NAME"
 
             mkdir -p release/$cfg
@@ -154,7 +167,7 @@ jobs:
           | **目标平台** | ${TARGET_BOARD} |
           | **源码分支** | ${{ env.BRANCH }} (${SOURCE_COMMIT}) |
           | **配置类型** | ${CONFIG_DESC} |
-          | **源码来源** | ${SOURCE_REPO} |
+          | **源码来源** | ${SOURCE_REPO} (forked from fzs209/immortalwrt) |
           | **编译时间** | ${DATE} |
           | **内核版本** | ${KERNEL_VER} |
 
