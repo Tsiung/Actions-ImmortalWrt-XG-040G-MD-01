@@ -1,0 +1,208 @@
+name: Dual-Branch-Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      configs:
+        description: '选择要编译的配置（逗号分隔，支持：base,openclash,ksmbd,cups,full）'
+        required: true
+        default: 'base'
+        type: string
+      # ========== 调试模式开关 ==========
+      # 开启后只会编译用户选择的第一个配置（忽略其他配置），用于快速测试
+      debug_mode:
+        description: '调试模式（仅编译第一个配置，输出详细日志）'
+        required: false
+        default: false
+        type: boolean
+      # =================================
+
+env:
+  REPO_URL: https://github.com/wina8201/immortalwrt.git
+  DEVICE_TARGET: airoha
+  DEVICE_SUBTARGET: an7581
+  TZ: Asia/Shanghai
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        branch: [master, openwrt-25.12]
+        # 动态生成配置列表（根据用户输入和调试模式过滤）
+        config: ${{ fromJSON(
+          # 定义所有配置的映射
+          '[' +
+            (contains(github.event.inputs.configs, 'base') && '{"seed":"seed-01.config","suffix":"Base","desc":"基础功能"},' || '') +
+            (contains(github.event.inputs.configs, 'openclash') && '{"seed":"seed-02.config","suffix":"OpenClash","desc":"基础功能 + OpenClash"},' || '') +
+            (contains(github.event.inputs.configs, 'ksmbd') && '{"seed":"seed-03.config","suffix":"OpenClash-KSMBD","desc":"基础功能 + OpenClash + KSMBD文件共享"},' || '') +
+            (contains(github.event.inputs.configs, 'cups') && '{"seed":"seed-04.config","suffix":"OpenClash-CUPS","desc":"基础功能 + OpenClash + CUPS打印机共享"},' || '') +
+            (contains(github.event.inputs.configs, 'full') && '{"seed":"seed-05.config","suffix":"OpenClash-KSMBD-CUPS","desc":"基础功能 + OpenClash + KSMBD文件共享 + CUPS打印机共享"},' || '')
+          + ']' | rtrimstr(',') + ']'
+        ) }}
+    # ========== 调试模式：只保留列表中的第一个配置 ==========
+    # 若开启调试模式，则覆盖 matrix.config 为仅包含第一个元素
+    # 使用 if 条件无法动态修改 matrix，但可以通过在 job 中设置输出变量并在后续步骤中使用
+    # 这里采用更简单的方法：在第一步中判断并退出多余配置（不推荐），或者使用 include 条件过滤
+    # 由于 matrix 在 job 开始前就已确定，无法动态修改。改用下一步中的条件跳过部分任务。
+    # 因此调试模式的实现改为：在后续每个任务的开头检查是否为第一个配置，如果不是则快速退出。
+    # 这样不会浪费太多资源，且代码清晰。
+    runs-on: ubuntu-latest
+    steps:
+      # ========== 调试模式：如果不是第一个配置则直接退出 ==========
+      - name: 调试模式检查
+        if: github.event.inputs.debug_mode == 'true'
+        run: |
+          # 获取当前配置在列表中的序号（依赖矩阵顺序）
+          # 由于 matrix.config 是动态生成的，我们通过比较当前配置的 suffix 是否等于第一个配置的 suffix
+          FIRST_CONFIG_SUFFIX="${{ fromJSON('[' + (
+            (contains(github.event.inputs.configs, 'base') && '"Base",' || '') +
+            (contains(github.event.inputs.configs, 'openclash') && '"OpenClash",' || '') +
+            (contains(github.event.inputs.configs, 'ksmbd') && '"OpenClash-KSMBD",' || '') +
+            (contains(github.event.inputs.configs, 'cups') && '"OpenClash-CUPS",' || '') +
+            (contains(github.event.inputs.configs, 'full') && '"OpenClash-KSMBD-CUPS",' || '')
+          ) | rtrimstr(',') + ']')[0] }}"
+          CURRENT_SUFFIX="${{ matrix.config.suffix }}"
+          if [ "$CURRENT_SUFFIX" != "$FIRST_CONFIG_SUFFIX" ]; then
+            echo "调试模式已开启，跳过非第一个配置: $CURRENT_SUFFIX"
+            exit 0  # 正常退出，不执行后续编译
+          else
+            echo "调试模式：保留第一个配置 $CURRENT_SUFFIX"
+          fi
+      # ========================================================
+
+      - name: 初始化编译环境
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo bash -c 'bash <(curl -sL https://build-scripts.immortalwrt.org/init_build_environment.sh)'
+          sudo -E apt -yqq install dos2unix libfuse-dev
+          sudo timedatectl set-timezone "$TZ"
+
+      - name: 扩展磁盘空间
+        uses: easimon/maximize-build-space@master
+        with:
+          swap-size-mb: 1024
+          temp-reserve-mb: 100
+          root-reserve-mb: 1024
+
+      - name: 检出当前仓库（存放 seed 文件）
+        uses: actions/checkout@v4
+
+      - name: 克隆 ImmortalWrt 源码（指定分支）
+        run: |
+          git clone --depth 1 "$REPO_URL" -b "${{ matrix.branch }}" openwrt
+          echo "OPENWRT_PATH=$PWD/openwrt" >> $GITHUB_ENV
+
+      - name: 获取源码分支长标识（commit hash）
+        run: |
+          cd $OPENWRT_PATH
+          COMMIT_HASH=$(git rev-parse --short HEAD)
+          echo "COMMIT_HASH=$COMMIT_HASH" >> $GITHUB_ENV
+
+      - name: 生成构建日期及变量
+        run: |
+          BUILD_DATE=$(TZ=Asia/Shanghai date +"%Y%m%d")
+          BUILD_TIME=$(TZ=Asia/Shanghai date +"%Y-%m-%d %H:%M:%S")
+          echo "BUILD_DATE=$BUILD_DATE" >> $GITHUB_ENV
+          echo "BUILD_TIME=$BUILD_TIME" >> $GITHUB_ENV
+          RELEASE_TAG="XG-040G-MD-${{ matrix.branch }}-${{ matrix.config.suffix }}-${BUILD_DATE}-${{ github.run_number }}"
+          echo "RELEASE_TAG=$RELEASE_TAG" >> $GITHUB_ENV
+
+      - name: 加载对应种子配置
+        run: |
+          cd $OPENWRT_PATH
+          cp $GITHUB_WORKSPACE/${{ matrix.config.seed }} .config
+          make defconfig
+
+      - name: 恢复 DL 缓存
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.OPENWRT_PATH }}/dl
+          key: dl-${{ matrix.branch }}-${{ hashFiles('openwrt/feeds.conf*', 'openwrt/.config') }}
+          restore-keys: |
+            dl-${{ matrix.branch }}-
+
+      - name: 更新 feeds 并安装软件包（基础）
+        run: |
+          cd $OPENWRT_PATH
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      # ========== 自定义打印软件包源（仅 CUPS 配置需要） ==========
+      - name: 添加自定义打印软件包源（仅 CUPS 配置）
+        if: contains(matrix.config.desc, 'CUPS')
+        run: |
+          cd $OPENWRT_PATH
+          git clone --depth=1 https://github.com/master-0123/openwrt-printing-packages package/printing-packages
+          # 重新更新 feeds 以包含新包
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+      # ========================================================
+
+      - name: 下载软件包
+        run: |
+          cd $OPENWRT_PATH
+          make download -j8
+          find dl -size -1024c -delete
+
+      - name: 编译固件
+        id: compile
+        run: |
+          cd $OPENWRT_PATH
+          make -j$(nproc) || make -j1 V=s
+          echo "status=success" >> $GITHUB_OUTPUT
+
+      - name: 整理产物
+        if: steps.compile.outputs.status == 'success'
+        run: |
+          cd $OPENWRT_PATH/bin/targets/*/*
+          VERSION_KERNEL=$(find -type f -name "*.manifest" -exec grep -oP '^kernel - \K.*?(?=~|-\d+-)' {} \; | head -1)
+          echo "VERSION_KERNEL=$VERSION_KERNEL" >> $GITHUB_ENV
+          cp $OPENWRT_PATH/.config build.config
+          echo "FIRMWARE_PATH=$PWD" >> $GITHUB_ENV
+
+      - name: 发布固件到独立 Release
+        if: steps.compile.outputs.status == 'success'
+        uses: ncipollo/release-action@v1
+        with:
+          name: XG-040G-MD-${{ matrix.branch }}-${{ matrix.config.suffix }}-${{ env.BUILD_DATE }}
+          tag: ${{ env.RELEASE_TAG }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          artifacts: ${{ env.FIRMWARE_PATH }}/*.bin,${{ env.FIRMWARE_PATH }}/*.manifest,${{ env.FIRMWARE_PATH }}/build.config
+          body: |
+            ## XG-040G-MD 固件 (${{ matrix.branch }} / ${{ matrix.config.suffix }})
+
+            ### 📦 构建信息
+            | 项目 | 内容 |
+            |------|------|
+            | **设备型号** | Bell XG-040G-MD |
+            | **目标平台** | airoha/an7581 |
+            | **源码分支** | ${{ matrix.branch }} (commit ${{ env.COMMIT_HASH }}) |
+            | **配置类型** | ${{ matrix.config.desc }} |
+            | **源码来源** | [wina8201/immortalwrt](https://github.com/wina8201/immortalwrt) (forked from fzs209) |
+            | **编译时间** | ${{ env.BUILD_TIME }} |
+            | **内核版本** | ${{ env.VERSION_KERNEL }} |
+
+            ### 🗂️ 文件说明
+            - `*-squashfs-sysupgrade.bin` → 在已有 OpenWrt/ImmortalWrt 中升级使用
+            - `*-squashfs-factory.bin` → 从 uboot 首次刷机使用
+            - `build.config` → 本次编译使用的完整配置文件
+
+            ### 🔐 默认信息
+            | 项目 | 默认值 |
+            |------|--------|
+            | **管理地址** | 192.168.1.1 |
+            | **用户名** | root |
+            | **密码** | *无（首次登录后请务必设置）* |
+
+            ### ⚠️ 注意事项
+            - 刷机前请务必核对设备型号，错误固件可能导致变砖。
+            - 建议在刷机前备份原厂固件和重要数据。
+            - 若固件内集成第三方插件，其安全性请自行评估。
+            - 本固件为自动编译生成，请仔细核对文件完整性后再刷写。
+            ${{ contains(matrix.config.desc, 'CUPS') && '\n- **打印机驱动说明**：本固件集成了 CUPS 打印服务，默认包含 Epson 打印机驱动 (epson-inkjet-printer-escpr)，如需使用其他品牌打印机，请自行安装对应驱动。' || '' }}
+
+            ---
+            *由 GitHub Actions 自动构建 | Release ${{ env.RELEASE_TAG }}*
