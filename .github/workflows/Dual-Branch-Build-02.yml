@@ -1,18 +1,14 @@
-name: XG-040G-MD Dual-Branch-Build-02
+name: Build ImmortalWrt for XG-040G-MD
 
 on:
   workflow_dispatch:
     inputs:
       configs:
-        description: '选择要编译的配置（可多选，按住 Ctrl/Command 多选）'
+        description: |
+          要编译的配置（JSON 数组格式，例如 ["seed-01","seed-02"]）
+          全部编译请输入: ["seed-01","seed-02","seed-03","seed-04","seed-05"]
         required: true
-        type: choice
-        options:
-          - seed-01
-          - seed-02
-          - seed-03
-          - seed-04
-          - seed-05
+        type: string
         default: '["seed-01","seed-02","seed-03","seed-04","seed-05"]'
 
 permissions:
