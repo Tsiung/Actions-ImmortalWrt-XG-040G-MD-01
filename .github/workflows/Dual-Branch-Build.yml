@@ -29,6 +29,7 @@ env:
   REPO_URL: https://github.com/wina8201/immortalwrt.git
   DEVICE_NAME: XG-040G-MD
   TZ: Asia/Shanghai
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   matrix-generate:
@@ -95,13 +96,17 @@ jobs:
           echo "SOURCE_COMMIT=$(git rev-parse HEAD)" >> $GITHUB_ENV
           echo "OPENWRT_PATH=$PWD" >> $GITHUB_ENV
 
-      - name: Install Feeds
+      - name: Install Feeds and Printing Packages
         run: |
           cd $OPENWRT_PATH
+          # 确保 feeds.conf.default 末尾有换行符，避免追加语法错误
+          sed -i -e '$a\' feeds.conf.default
+          # 添加 cups feed（其他方式保持不动）
           echo "src-git cups https://github.com/fengchen-github/openwrt-cups.git" >> feeds.conf.default
-          echo "src-git printing-packages https://gitee.com/master0123/openwrt-printing-packages.git;master" >> feeds.conf.default
           ./scripts/feeds update -a
           ./scripts/feeds install -a
+          # 手动克隆 printing-packages（已验证成功，避免 feed 语法问题）
+          git clone --depth=1 https://gitee.com/master0123/openwrt-printing-packages.git package/printing-packages
 
       - name: Build all configs
         env:
