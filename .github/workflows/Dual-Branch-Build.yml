@@ -1,4 +1,4 @@
-name: XG-040G-MD Dual-Branch Build with CUPS Packages
+name: XG-040G-MD Dual-Branch Build
 
 on:
   workflow_dispatch:
@@ -22,15 +22,14 @@ jobs:
       max-parallel: 4
       matrix:
         branch: [master, openwrt-25.12]
-        config: ${{ fromJSON(
-          '[' +
-            (contains(github.event.inputs.configs, 'base') && '{"seed":"seed-01.config","suffix":"Base","desc":"基础功能","need_cups":false},' || '') +
-            (contains(github.event.inputs.configs, 'openclash') && '{"seed":"seed-02.config","suffix":"OpenClash","desc":"基础功能 + OpenClash","need_cups":false},' || '') +
-            (contains(github.event.inputs.configs, 'ksmbd') && '{"seed":"seed-03.config","suffix":"OpenClash-KSMBD","desc":"基础功能 + OpenClash + KSMBD文件共享","need_cups":false},' || '') +
-            (contains(github.event.inputs.configs, 'cups') && '{"seed":"seed-04.config","suffix":"OpenClash-CUPS","desc":"基础功能 + OpenClash + CUPS打印机共享","need_cups":true},' || '') +
-            (contains(github.event.inputs.configs, 'full') && '{"seed":"seed-05.config","suffix":"OpenClash-KSMBD-CUPS","desc":"基础功能 + OpenClash + KSMBD文件共享 + CUPS打印机共享","need_cups":true},' || '')
-          + ']' | rtrimstr(',') + ']'
-        ) }}
+        config:
+          - {key: base,     seed: seed-01.config, suffix: Base,                  desc: "基础功能",                                     need_cups: false}
+          - {key: openclash, seed: seed-02.config, suffix: OpenClash,            desc: "基础功能 + OpenClash",                         need_cups: false}
+          - {key: ksmbd,    seed: seed-03.config, suffix: OpenClash-KSMBD,       desc: "基础功能 + OpenClash + KSMBD文件共享",         need_cups: false}
+          - {key: cups,     seed: seed-04.config, suffix: OpenClash-CUPS,        desc: "基础功能 + OpenClash + CUPS打印机共享",        need_cups: true}
+          - {key: full,     seed: seed-05.config, suffix: OpenClash-KSMBD-CUPS,  desc: "基础功能 + OpenClash + KSMBD文件共享 + CUPS打印机共享", need_cups: true}
+    # 关键：仅当用户输入的 configs 中包含当前配置的 key 时才运行该 job
+    if: contains(github.event.inputs.configs, matrix.config.key)
 
     runs-on: ubuntu-latest
     steps:
