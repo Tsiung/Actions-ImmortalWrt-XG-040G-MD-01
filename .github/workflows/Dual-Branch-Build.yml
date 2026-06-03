@@ -1,183 +1,181 @@
-name: Dual-Branch Build
+name: Build ImmortalWrt for XG-040G-MD (Multi-Branch)
 
 on:
   workflow_dispatch:
     inputs:
-      base:
-        description: '基础功能 (Base)'
-        type: boolean
-        default: true
-      openclash:
-        description: 'OpenClash'
-        type: boolean
-        default: false
-      ksmbd:
-        description: 'KSMBD 文件共享'
-        type: boolean
-        default: false
-      cups:
-        description: 'CUPS 打印机共享'
-        type: boolean
-        default: false
-      full:
-        description: '全功能 (OpenClash+KSMBD+CUPS)'
-        type: boolean
-        default: false
+      scope:
+        description: '编译范围'
+        required: true
+        default: 'all_branches'
+        type: choice
+        options:
+          - all_branches
+          - master_only
+          - 25.12_only
+      config:
+        description: '选择配置（对所选分支生效）'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - seed-01
+          - seed-02
+          - seed-03
+          - seed-04
+          - seed-05
 
 env:
-  REPO_URL: https://github.com/wina8201/immortalwrt.git
-  DEVICE_TARGET: airoha
-  DEVICE_SUBTARGET: an7581
-  TZ: Asia/Shanghai
+  DEVICE_NAME: XG-040G-MD
+  SOURCE_REPO: https://github.com/wina8201/immortalwrt
 
 jobs:
-  build:
+  matrix-generate:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      max-parallel: 4
-      matrix:
-        branch: [master, openwrt-25.12]
-        config:
-          - { key: base, seed: seed-01.config, suffix: Base, desc: "基础功能", cups: false }
-          - { key: openclash, seed: seed-02.config, suffix: OpenClash, desc: "基础功能 + OpenClash", cups: false }
-          - { key: ksmbd, seed: seed-03.config, suffix: OpenClash-KSMBD, desc: "基础功能 + OpenClash + KSMBD文件共享", cups: false }
-          - { key: cups, seed: seed-04.config, suffix: OpenClash-CUPS, desc: "基础功能 + OpenClash + CUPS打印机共享", cups: true }
-          - { key: full, seed: seed-05.config, suffix: OpenClash-KSMBD-CUPS, desc: "基础功能 + OpenClash + KSMBD文件共享 + CUPS打印机共享", cups: true }
-
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
     steps:
-      - name: 检查是否选中该配置
-        if: github.event.inputs[matrix.config.key] != true
+      - id: set-matrix
         run: |
-          echo "未选中配置 ${{ matrix.config.key }}，跳过"
-          exit 0
+          SCOPE="${{ github.event.inputs.scope }}"
+          if [ "$SCOPE" = "all_branches" ]; then
+            BRANCHES='["master", "25.12"]'
+          elif [ "$SCOPE" = "master_only" ]; then
+            BRANCHES='["master"]'
+          else
+            BRANCHES='["25.12"]'
+          fi
+          echo "matrix={\"branch\": $BRANCHES}" >> $GITHUB_OUTPUT
 
-      - name: 初始化编译环境
-        env:
-          DEBIAN_FRONTEND: noninteractive
+  build:
+    needs: matrix-generate
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      matrix: ${{ fromJSON(needs.matrix-generate.outputs.matrix) }}
+    steps:
+      - name: Checkout Actions repository
+        uses: actions/checkout@v3
+
+      - name: Set up variables
+        id: vars
         run: |
-          sudo bash -c 'bash <(curl -sL https://build-scripts.immortalwrt.org/init_build_environment.sh)'
-          sudo -E apt -yqq install dos2unix libfuse-dev
-          sudo timedatectl set-timezone "$TZ"
+          echo "DATE=$(date +%Y%m%d)" >> $GITHUB_ENV
+          if [ "${{ github.event.inputs.config }}" = "all" ]; then
+            CONFIGS="seed-01 seed-02 seed-03 seed-04 seed-05"
+          else
+            CONFIGS="${{ github.event.inputs.config }}"
+          fi
+          echo "CONFIGS=$CONFIGS" >> $GITHUB_ENV
+          echo "BRANCH=${{ matrix.branch }}" >> $GITHUB_ENV
 
-      - name: 扩展磁盘空间
-        uses: easimon/maximize-build-space@master
-        with:
-          swap-size-mb: 1024
-          temp-reserve-mb: 100
-          root-reserve-mb: 1024
-
-      - name: 检出当前仓库
-        uses: actions/checkout@v4
-
-      - name: 克隆 ImmortalWrt 源码
+      - name: Install build dependencies
         run: |
-          git clone --depth 1 "$REPO_URL" -b "${{ matrix.branch }}" openwrt
-          echo "OPENWRT_PATH=$PWD/openwrt" >> $GITHUB_ENV
+          sudo apt-get update
+          sudo apt-get install -y build-essential ccache ecj fastjar file g++ gawk \
+          gettext git java-propose-classpath libelf-dev libncurses5-dev \
+          libncursesw5-dev libssl-dev python3 python3-distutils python3-setuptools \
+          rsync subversion swig time u-boot-tools unzip wget xsltproc zlib1g-dev \
+          libfuse-dev
 
-      - name: 获取源码分支长标识
+      - name: Clone ImmortalWrt source
         run: |
-          cd $OPENWRT_PATH
-          COMMIT_HASH=$(git rev-parse --short HEAD)
-          echo "COMMIT_HASH=$COMMIT_HASH" >> $GITHUB_ENV
-
-      - name: 生成构建日期及变量
-        run: |
-          BUILD_DATE=$(TZ=Asia/Shanghai date +"%Y%m%d")
-          BUILD_TIME=$(TZ=Asia/Shanghai date +"%Y-%m-%d %H:%M:%S")
-          echo "BUILD_DATE=$BUILD_DATE" >> $GITHUB_ENV
-          echo "BUILD_TIME=$BUILD_TIME" >> $GITHUB_ENV
-          RELEASE_TAG="XG-040G-MD-${{ matrix.branch }}-${{ matrix.config.suffix }}-${BUILD_DATE}-${{ github.run_number }}"
-          echo "RELEASE_TAG=$RELEASE_TAG" >> $GITHUB_ENV
-
-      - name: 加载对应种子配置
-        run: |
-          cd $OPENWRT_PATH
-          cp $GITHUB_WORKSPACE/${{ matrix.config.seed }} .config
-          make defconfig
-
-      - name: 恢复 DL 缓存
-        uses: actions/cache@v4
-        with:
-          path: ${{ env.OPENWRT_PATH }}/dl
-          key: dl-${{ matrix.branch }}-${{ hashFiles('openwrt/feeds.conf*', 'openwrt/.config') }}
-          restore-keys: |
-            dl-${{ matrix.branch }}-
-
-      - name: 添加打印机驱动包
-        if: matrix.config.cups == true
-        run: |
-          cd $OPENWRT_PATH
-          git clone --depth=1 https://github.com/master-0123/openwrt-printing-packages.git package/printing-packages
-
-      - name: 更新 feeds 并安装软件包
-        run: |
-          cd $OPENWRT_PATH
+          git clone --depth=1 --branch ${{ env.BRANCH }} $SOURCE_REPO openwrt
+          cd openwrt
+          echo "SOURCE_COMMIT=$(git rev-parse HEAD)" >> $GITHUB_ENV
+          git clone --depth=1 https://github.com/master-0123/openwrt-printing-packages package/printing-packages
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-      - name: 下载软件包
+      - name: Build and release for each config
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          cd $OPENWRT_PATH
-          make download -j8
-          find dl -size -1024c -delete
+          CONFIG_LIST="${{ env.CONFIGS }}"
+          for cfg in $CONFIG_LIST; do
+            echo "========== Building branch: ${{ env.BRANCH }} | config: $cfg =========="
 
-      - name: 编译固件
-        id: compile
-        run: |
-          cd $OPENWRT_PATH
-          make -j$(nproc) || make -j1 V=s
-          echo "status=success" >> $GITHUB_OUTPUT
+            cd openwrt
+            make clean
+            rm -f .config .config.old
+            cp $GITHUB_WORKSPACE/${cfg}.config .config
+            make defconfig
 
-      - name: 整理产物
-        if: steps.compile.outputs.status == 'success'
-        run: |
-          cd $OPENWRT_PATH/bin/targets/*/*
-          VERSION_KERNEL=$(find -type f -name "*.manifest" -exec grep -oP '^kernel - \K.*?(?=~|-\d+-)' {} \; | head -1)
-          echo "VERSION_KERNEL=$VERSION_KERNEL" >> $GITHUB_ENV
-          cp $OPENWRT_PATH/.config build.config
-          echo "FIRMWARE_PATH=$PWD" >> $GITHUB_ENV
+            make download -j$(nproc) V=s
+            make -j$(nproc) V=s || { echo "Build failed for ${{ env.BRANCH }}/$cfg"; exit 1; }
 
-      - name: 发布固件到独立 Release
-        if: steps.compile.outputs.status == 'success'
-        uses: ncipollo/release-action@v1
-        with:
-          name: XG-040G-MD-${{ matrix.branch }}-${{ matrix.config.suffix }}-${{ env.BUILD_DATE }}
-          tag: ${{ env.RELEASE_TAG }}
-          token: ${{ secrets.GITHUB_TOKEN }}
-          artifacts: ${{ env.FIRMWARE_PATH }}/*.bin,${{ env.FIRMWARE_PATH }}/*.manifest,${{ env.FIRMWARE_PATH }}/build.config
-          body: |
-            ## XG-040G-MD 固件 (${{ matrix.config.suffix }})
+            KERNEL_VER=$(make kernelversion)
+            TARGET_BOARD=$(grep '^CONFIG_TARGET_BOARD=' .config | cut -d= -f2 | tr -d '"')
+            cd ..
 
-            ### 📦 构建信息
-            | 项目 | 内容 |
-            |------|------|
-            | **设备型号** | Bell XG-040G-MD |
-            | **目标平台** | airoha/an7581 |
-            | **源码分支** | ${{ matrix.branch }} (commit ${{ env.COMMIT_HASH }}) |
-            | **配置类型** | ${{ matrix.config.desc }} |
-            | **源码来源** | [wina8201/immortalwrt](https://github.com/wina8201/immortalwrt) (forked from fzs209) |
-            | **编译时间** | ${{ env.BUILD_TIME }} |
-            | **内核版本** | ${{ env.VERSION_KERNEL }} |
+            case $cfg in
+              seed-01) FEATURE="Base";;
+              seed-02) FEATURE="OpenClash";;
+              seed-03) FEATURE="OpenClash-KSMBD";;
+              seed-04) FEATURE="OpenClash-CUPS";;
+              seed-05) FEATURE="OpenClash-KSMBD-CUPS";;
+            esac
 
-            ### 🗂️ 文件说明
-            - `*-squashfs-sysupgrade.bin` → 在已有 OpenWrt/ImmortalWrt 中升级使用
-            - `*-squashfs-factory.bin` → 从 uboot 首次刷机使用
-            - `build.config` → 本次编译使用的完整配置文件
+            # Tag 加上分支名避免冲突
+            TAG_NAME="${DEVICE_NAME}-${FEATURE}-${{ env.BRANCH }}-${DATE}"
+            echo "Preparing release: $TAG_NAME"
 
-            ### 🔐 默认信息
-            | 项目 | 默认值 |
-            |------|--------|
-            | **管理地址** | 192.168.1.1 |
-            | **用户名** | root |
-            | **密码** | *无（首次登录后请务必设置）* |
+            mkdir -p release/$cfg
+            find openwrt/bin/targets -name '*-squashfs-sysupgrade.bin' -exec cp {} release/$cfg/ \;
+            find openwrt/bin/targets -name '*-squashfs-factory.bin' -exec cp {} release/$cfg/ \;
+            cp openwrt/.config release/$cfg/build.config
 
-            ### ⚠️ 注意事项
-            - 刷机前请务必核对设备型号，错误固件可能导致变砖。
-            - 建议在刷机前备份原厂固件和重要数据。
-            - 若固件内集成第三方插件，其安全性请自行评估。
-            - 本固件为自动编译生成，请仔细核对文件完整性后再刷写。
-            ${{ matrix.config.cups == true && '\n- **打印机驱动说明**：本固件集成了 CUPS 打印服务，默认包含 Epson 打印机驱动 (epson-inkjet-printer-escpr)，如需使用其他品牌打印机，请自行安装对应驱动。' || '' }}
+            CONFIG_DESC="基础功能"
+            [ "$cfg" != "seed-01" ] && CONFIG_DESC+=" OpenClash"
+            [[ "$cfg" == "seed-03" || "$cfg" == "seed-05" ]] && CONFIG_DESC+=" KSMBD文件共享"
+            [[ "$cfg" == "seed-04" || "$cfg" == "seed-05" ]] && CONFIG_DESC+=" CUPS打印机共享"
 
-            ---
-            *由 GitHub Actions 自动构建 | Release ${{ env.RELEASE_TAG }}*
+            NOTES_EXTRA=""
+            if [[ "$cfg" == "seed-04" || "$cfg" == "seed-05" ]]; then
+              NOTES_EXTRA="- 本固件集成了CUPS打印服务，集成打印机驱动为 **Epson-inkjet-printer-escpr**，仅支持Epson喷墨打印机。请确保您的打印机兼容。"
+            fi
+
+            cat > release/$cfg/release.md <<EOF
+          ### 📦 构建信息
+          | 项目 | 内容 |
+          |------|------|
+          | **设备型号** | ${DEVICE_NAME} |
+          | **目标平台** | ${TARGET_BOARD} |
+          | **源码分支** | ${{ env.BRANCH }} (${SOURCE_COMMIT}) |
+          | **配置类型** | ${CONFIG_DESC} |
+          | **源码来源** | ${SOURCE_REPO} |
+          | **编译时间** | ${DATE} |
+          | **内核版本** | ${KERNEL_VER} |
+
+          ### 🗂️ 文件说明
+          - \`*-squashfs-sysupgrade.bin\` → 在已有 OpenWrt/ImmortalWrt 中升级使用
+          - \`*-squashfs-factory.bin\` → 从uboot首次刷机使用
+          - \`build.config\` → 本次编译使用的完整配置文件
+
+          ### 🔐 默认信息
+          | 项目 | 默认值 |
+          |------|--------|
+          | **管理地址** | 192.168.1.1 |
+          | **用户名** | root |
+          | **密码** | *无（首次登录后请务必设置）* |
+
+          ### ⚠️ 注意事项
+          - 刷机前请务必核对设备型号，错误固件可能导致变砖。
+          - 建议在刷机前备份原厂固件和重要数据。
+          - 若固件内集成第三方插件，其安全性请自行评估。
+          - 本固件为自动编译生成，请仔细核对文件完整性后再刷写。
+          ${NOTES_EXTRA}
+          ---
+          *由 GitHub Actions 自动构建 | Release ${TAG_NAME}*
+          EOF
+
+            cd release/$cfg
+            gh release delete "$TAG_NAME" -y --repo $GITHUB_REPOSITORY 2>/dev/null || true
+            git push origin :refs/tags/$TAG_NAME 2>/dev/null || true
+            gh release create "$TAG_NAME" \
+              --title "$TAG_NAME" \
+              --notes-file release.md \
+              --repo $GITHUB_REPOSITORY \
+              *.bin build.config
+            cd ../..
+          done
