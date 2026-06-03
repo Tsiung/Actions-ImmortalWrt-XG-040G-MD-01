@@ -28,11 +28,16 @@ jobs:
           - {key: ksmbd,    seed: seed-03.config, suffix: OpenClash-KSMBD,       desc: "基础功能 + OpenClash + KSMBD文件共享",         need_cups: false}
           - {key: cups,     seed: seed-04.config, suffix: OpenClash-CUPS,        desc: "基础功能 + OpenClash + CUPS打印机共享",        need_cups: true}
           - {key: full,     seed: seed-05.config, suffix: OpenClash-KSMBD-CUPS,  desc: "基础功能 + OpenClash + KSMBD文件共享 + CUPS打印机共享", need_cups: true}
-    # 关键：仅当用户输入的 configs 中包含当前配置的 key 时才运行该 job
-    if: contains(github.event.inputs.configs, matrix.config.key)
 
     runs-on: ubuntu-latest
     steps:
+      - name: 检查是否选中该配置
+        if: |
+          !contains(github.event.inputs.configs, matrix.config.key)
+        run: |
+          echo "未选中配置 ${{ matrix.config.key }}，跳过"
+          exit 0
+
       - name: 初始化编译环境
         env:
           DEBIAN_FRONTEND: noninteractive
