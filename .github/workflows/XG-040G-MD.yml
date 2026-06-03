@@ -1,4 +1,4 @@
-name: XG-040G-MD
+name: XG-040G-MD-fz
 
 on:
   workflow_dispatch:
