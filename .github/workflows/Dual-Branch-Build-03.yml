@@ -37,14 +37,14 @@ jobs:
       - name: Checkout Actions Repository
         uses: actions/checkout@v4
 
-      - name: Skip unused config
+      - name: Skip Task Filter
         run: |
-          opt="${{ inputs.config_choice }}"
-          cfg="${{ matrix.config }}"
-          if [[ $opt != "all" ]];then
-            pick=$(echo $opt | cut -d: -f1).config
-            if [[ $pick != "$cfg" ]];then
-              echo "跳过当前配置"
+          OPT="${{ inputs.config_choice }}"
+          CUR_CFG="${{ matrix.config }}"
+          if [ "$OPT" != "all" ]; then
+            SEL=$(echo $OPT | cut -d: -f1).config
+            if [ "$SEL" != "$CUR_CFG" ]; then
+              echo Skip this build
               exit 1
             fi
           fi
@@ -59,13 +59,13 @@ jobs:
           REPO_BRANCH: ${{ matrix.branch }}
         working-directory: ${{ runner.workspace }}
 
-      - name: Customize Source (Add CUPS & Printing Packages)
+      - name: Customize Source
         run: |
           cd openwrt
           echo "src-git cups https://github.com/fengchen-github/openwrt-cups.git" >> feeds.conf.default
           git clone --depth=1 https://github.com/master-0123/openwrt-printing-packages package/printing-packages
 
-      - name: Load Configuration File
+      - name: Load Config
         run: |
           cd openwrt
           cp ${{ github.workspace }}/${{ matrix.config }} .config
@@ -79,14 +79,14 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-openwrt-${{ matrix.branch }}-
 
-      - name: Build Firmware
+      - name: Compile Firmware
         run: |
           cd openwrt
           ./scripts/feeds update -a
           ./scripts/feeds install -a
           make -j$(nproc) V=s
 
-      - name: Rename Firmware Files
+      - name: Rename Bin
         run: |
           cd openwrt
           DATE=$(date +%Y%m%d)
@@ -111,7 +111,7 @@ jobs:
           CONFIG: ${{ matrix.config }}
           BRANCH: ${{ matrix.branch }}
 
-      - name: Upload Build Artifacts
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: firmware-${{ matrix.branch }}-${{ matrix.config }}
@@ -123,17 +123,17 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - name: Download All Artifacts
+      - name: Download All Files
         uses: actions/download-artifact@v4
         with:
           path: ./firmwares
 
-      - name: Organize Files
+      - name: Sort Files
         run: |
           find ./firmwares -type f -exec mv {} . \;
           rm -rf ./firmwares
 
-      - name: Generate Release Body
+      - name: Make Release Note
         run: |
           DATE=$(date +%Y-%m-%d)
           DATE_TAG=$(date +%Y%m%d)
@@ -186,7 +186,7 @@ jobs:
           echo "---" >> release_body.md
           echo "*由 GitHub Actions 自动构建 | Release XG-040G-MD-${DATE_TAG}*" >> release_body.md
 
-      - name: Create Release
+      - name: Publish Release
         uses: softprops/action-gh-release@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
