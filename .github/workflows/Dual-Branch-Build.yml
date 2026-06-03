@@ -119,8 +119,8 @@ jobs:
             make clean
             rm -f .config .config.old
             cp $GITHUB_WORKSPACE/${cfg}.config .config
-            export TERM=xterm-256color
-            make defconfig
+            export TERM=dumb
+            make olddefconfig
 
             make download -j8
             find dl -size -1024c -delete
