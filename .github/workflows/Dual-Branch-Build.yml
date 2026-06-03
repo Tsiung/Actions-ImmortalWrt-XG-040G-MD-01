@@ -62,7 +62,7 @@ jobs:
           DEBIAN_FRONTEND: noninteractive
         run: |
           sudo bash -c 'bash <(curl -sL https://build-scripts.immortalwrt.org/init_build_environment.sh)'
-          sudo -E apt -yqq install dos2unix libfuse-dev ncurses-term
+          sudo -E apt -yqq install dos2unix libfuse-dev
           sudo timedatectl set-timezone "$TZ"
 
       - name: Combine Disks
@@ -99,13 +99,10 @@ jobs:
       - name: Install Feeds and Printing Packages
         run: |
           cd $OPENWRT_PATH
-          # 确保 feeds.conf.default 末尾有换行符，避免追加语法错误
           sed -i -e '$a\' feeds.conf.default
-          # 添加 cups feed（其他方式保持不动）
           echo "src-git cups https://github.com/fengchen-github/openwrt-cups.git" >> feeds.conf.default
           ./scripts/feeds update -a
           ./scripts/feeds install -a
-          # 手动克隆 printing-packages（已验证成功，避免 feed 语法问题）
           git clone --depth=1 https://gitee.com/master0123/openwrt-printing-packages.git package/printing-packages
 
       - name: Build all configs
