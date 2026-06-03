@@ -96,7 +96,15 @@ jobs:
           # 使用 Gitee 源克隆打印支持包（国内加速）
           git clone --depth=1 https://gitee.com/master0123/openwrt-printing-packages.git package/printing-packages
           echo "OPENWRT_PATH=$PWD" >> $GITHUB_ENV
-
+          
+      - name: Install Feeds
+        run: |
+          cd $OPENWRT_PATH
+          echo "src-git cups https://github.com/fengchen-github/openwrt-cups.git" >> feeds.conf.default
+          echo "src-git printing-packages https://gitee.com/master0123/openwrt-printing-packages.git;master" >> feeds.conf.default
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+          
       - name: Install Feeds
         run: |
           cd $OPENWRT_PATH
