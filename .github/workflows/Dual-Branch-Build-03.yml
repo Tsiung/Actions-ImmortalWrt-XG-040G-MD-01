@@ -14,7 +14,6 @@ on:
           - seed-04: 基础+OpenClash+CUPS
           - seed-05: 全部功能
           - all: 全部配置(双分支)
-
 env:
   REPO_URL: https://github.com/fzs209/immortalwrt.git
 
@@ -23,25 +22,32 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      max-parallel: 12
+      max-parallel: 10
       matrix:
         branch:
           - master-XG-040G-MD
           - openwrt-25.12-XG-040G-MD
         config:
-          ${{
-            inputs.config_choice == 'all'
-              && fromJson('["seed-01.config","seed-02.config","seed-03.config","seed-04.config","seed-05.config"]')
-              || inputs.config_choice == 'seed-01: 基础路由器功能' && fromJson('["seed-01.config"]')
-              || inputs.config_choice == 'seed-02: 基础+OpenClash' && fromJson('["seed-02.config"]')
-              || inputs.config_choice == 'seed-03: 基础+OpenClash+KSMBD' && fromJson('["seed-03.config"]')
-              || inputs.config_choice == 'seed-04: 基础+OpenClash+CUPS' && fromJson('["seed-04.config"]')
-              || inputs.config_choice == 'seed-05: 全部功能' && fromJson('["seed-05.config"]')
-          }}
-
+          - seed-01.config
+          - seed-02.config
+          - seed-03.config
+          - seed-04.config
+          - seed-05.config
     steps:
       - name: Checkout Actions Repository
         uses: actions/checkout@v4
+
+      - name: Skip unused config
+        run: |
+          opt="${{ inputs.config_choice }}"
+          cfg="${{ matrix.config }}"
+          if [[ $opt != "all" ]];then
+            pick=$(echo $opt | cut -d: -f1).config
+            if [[ $pick != "$cfg" ]];then
+              echo "跳过当前配置"
+              exit 1
+            fi
+          fi
 
       - name: Initialize Build Environment
         uses: P3TERX/OpenWrt-Build-Environment@main
