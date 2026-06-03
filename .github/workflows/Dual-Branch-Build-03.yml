@@ -1,4 +1,4 @@
-name: XG-040G-MD Dual-Branch-Build-03
+name: Build ImmortalWrt for XG-040G-MD
 on:
   workflow_dispatch:
     inputs:
@@ -26,7 +26,30 @@ jobs:
         branch:
           - master-XG-040G-MD
           - openwrt-25.12-XG-040G-MD
-        config: ${{ fromJson(inputs.config_choice == 'all' ? '["seed-01.config","seed-02.config","seed-03.config","seed-04.config","seed-05.config"]' : format('["{0}.config"]', split(inputs.config_choice, ':')[0])) }}
+    steps:
+      - name: Set config list
+        id: setcfg
+        run: |
+          if [[ "${{ inputs.config_choice }}" == "all" ]];then
+            echo "cfg=seed-01.config,seed-02.config,seed-03.config,seed-04.config,seed-05.config" >> $GITHUB_ENV
+          else
+            NAME=$(echo ${{ inputs.config_choice }} | cut -d: -f1)
+            echo "cfg=${NAME}.config" >> $GITHUB_ENV
+          fi
+    outputs:
+      cfg_list: ${{ env.cfg }}
+
+  compile:
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix:
+        branch:
+          - master-XG-040G-MD
+          - openwrt-25.12-XG-040G-MD
+        config: ${{ fromJson('["' + replace(needs.build.outputs.cfg_list, ',', '","') + '"]') }}
     steps:
       - name: Checkout Actions Repository
         uses: actions/checkout@v4
@@ -102,7 +125,7 @@ jobs:
             ./*.config
 
   release:
-    needs: build
+    needs: compile
     runs-on: ubuntu-latest
     steps:
       - name: Download All Artifacts
