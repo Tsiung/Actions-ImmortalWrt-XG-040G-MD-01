@@ -79,7 +79,6 @@ jobs:
         run: |
           echo "DATE=$(date +%Y%m%d)" >> $GITHUB_ENV
           echo "BRANCH=${{ matrix.branch }}" >> $GITHUB_ENV
-          # 提取短分支名用于 Release Tag（如 master-XG-040G-MD → master）
           SHORT_BRANCH=$(echo "${{ matrix.branch }}" | sed 's/-XG-040G-MD//')
           echo "BRANCH_SHORT=$SHORT_BRANCH" >> $GITHUB_ENV
           if [ "${{ github.event.inputs.config }}" = "all" ]; then
@@ -94,7 +93,6 @@ jobs:
           git clone "$REPO_URL" -b "${{ env.BRANCH }}" openwrt
           cd openwrt
           echo "SOURCE_COMMIT=$(git rev-parse HEAD)" >> $GITHUB_ENV
-          # 加入 CUPS 相关包
           git clone --depth=1 https://github.com/master-0123/openwrt-printing-packages package/printing-packages
           echo "OPENWRT_PATH=$PWD" >> $GITHUB_ENV
 
@@ -111,7 +109,6 @@ jobs:
           CONFIG_LIST="${{ env.CONFIGS }}"
           for cfg in $CONFIG_LIST; do
             echo "========== Building ${{ env.BRANCH }} - $cfg =========="
-
             cd $OPENWRT_PATH
             make clean
             rm -f .config .config.old
@@ -123,13 +120,11 @@ jobs:
 
             make -j$(nproc) || make -j1 || make -j1 V=s
 
-            # 获取编译信息
             KERNEL_VER=$(make kernelversion)
             TARGET_BOARD=$(grep '^CONFIG_TARGET_BOARD=' .config | cut -d= -f2 | tr -d '"')
             FIRMWARE_DIR=$(find bin/targets -type d -name "*-*-*" | head -1)
             cd $FIRMWARE_DIR
 
-            # 功能标签映射
             case $cfg in
               seed-01) FEATURE="Base";;
               seed-02) FEATURE="OpenClash";;
@@ -141,7 +136,6 @@ jobs:
             TAG_NAME="${DEVICE_NAME}-${{ env.BRANCH_SHORT }}-${FEATURE}-${DATE}"
             echo "Preparing release: $TAG_NAME"
 
-            # 配置描述
             CONFIG_DESC="基础功能"
             [ "$cfg" != "seed-01" ] && CONFIG_DESC+=" OpenClash"
             [[ "$cfg" == "seed-03" || "$cfg" == "seed-05" ]] && CONFIG_DESC+=" KSMBD文件共享"
@@ -152,7 +146,6 @@ jobs:
               NOTES_EXTRA="- 本固件集成了CUPS打印服务，集成打印机驱动为 **Epson-inkjet-printer-escpr**，仅支持Epson喷墨打印机。"
             fi
 
-            # 生成 Release 说明文件
             cat > $GITHUB_WORKSPACE/release.md <<EOF
           ### 📦 构建信息
           | 项目 | 内容 |
@@ -187,10 +180,8 @@ jobs:
           *由 GitHub Actions 自动构建 | Release ${TAG_NAME}*
           EOF
 
-            # 拷贝 build.config
             cp $OPENWRT_PATH/.config build.config
 
-            # 创建 Release（同名则先删除）
             gh release delete "$TAG_NAME" -y --repo $GITHUB_REPOSITORY 2>/dev/null || true
             git push origin :refs/tags/$TAG_NAME 2>/dev/null || true
             gh release create "$TAG_NAME" \
@@ -199,6 +190,5 @@ jobs:
               --repo $GITHUB_REPOSITORY \
               *.bin build.config
 
-            # 返回 openwrt 目录继续下一个配置
             cd $OPENWRT_PATH
           done
