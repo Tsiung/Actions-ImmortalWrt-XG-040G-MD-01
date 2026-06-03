@@ -1,4 +1,4 @@
-name: XG-040G-MD Dual-Branch Build
+name: Dual-Branch Build
 
 on:
   workflow_dispatch:
