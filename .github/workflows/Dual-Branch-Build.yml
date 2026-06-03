@@ -3,11 +3,26 @@ name: Dual-Branch Build
 on:
   workflow_dispatch:
     inputs:
-      configs:
-        description: '选择要编译的配置（用逗号分隔，可多选）'
-        required: true
-        default: 'base'
-        type: string
+      base:
+        description: '基础功能 (Base)'
+        type: boolean
+        default: true
+      openclash:
+        description: 'OpenClash'
+        type: boolean
+        default: false
+      ksmbd:
+        description: 'KSMBD 文件共享'
+        type: boolean
+        default: false
+      cups:
+        description: 'CUPS 打印机共享'
+        type: boolean
+        default: false
+      full:
+        description: '全功能 (OpenClash+KSMBD+CUPS)'
+        type: boolean
+        default: false
 
 env:
   REPO_URL: https://github.com/wina8201/immortalwrt.git
@@ -17,23 +32,22 @@ env:
 
 jobs:
   build:
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       max-parallel: 4
       matrix:
         branch: [master, openwrt-25.12]
         config:
-          - {key: base,     seed: seed-01.config, suffix: Base,                  desc: "基础功能",                                     need_cups: false}
-          - {key: openclash, seed: seed-02.config, suffix: OpenClash,            desc: "基础功能 + OpenClash",                         need_cups: false}
-          - {key: ksmbd,    seed: seed-03.config, suffix: OpenClash-KSMBD,       desc: "基础功能 + OpenClash + KSMBD文件共享",         need_cups: false}
-          - {key: cups,     seed: seed-04.config, suffix: OpenClash-CUPS,        desc: "基础功能 + OpenClash + CUPS打印机共享",        need_cups: true}
-          - {key: full,     seed: seed-05.config, suffix: OpenClash-KSMBD-CUPS,  desc: "基础功能 + OpenClash + KSMBD文件共享 + CUPS打印机共享", need_cups: true}
+          - { key: base, seed: seed-01.config, suffix: Base, desc: "基础功能", cups: false }
+          - { key: openclash, seed: seed-02.config, suffix: OpenClash, desc: "基础功能 + OpenClash", cups: false }
+          - { key: ksmbd, seed: seed-03.config, suffix: OpenClash-KSMBD, desc: "基础功能 + OpenClash + KSMBD文件共享", cups: false }
+          - { key: cups, seed: seed-04.config, suffix: OpenClash-CUPS, desc: "基础功能 + OpenClash + CUPS打印机共享", cups: true }
+          - { key: full, seed: seed-05.config, suffix: OpenClash-KSMBD-CUPS, desc: "基础功能 + OpenClash + KSMBD文件共享 + CUPS打印机共享", cups: true }
 
-    runs-on: ubuntu-latest
     steps:
       - name: 检查是否选中该配置
-        if: |
-          !contains(github.event.inputs.configs, matrix.config.key)
+        if: github.event.inputs[matrix.config.key] != true
         run: |
           echo "未选中配置 ${{ matrix.config.key }}，跳过"
           exit 0
@@ -53,15 +67,15 @@ jobs:
           temp-reserve-mb: 100
           root-reserve-mb: 1024
 
-      - name: 检出当前仓库（存放 seed 文件）
+      - name: 检出当前仓库
         uses: actions/checkout@v4
 
-      - name: 克隆 ImmortalWrt 源码（指定分支）
+      - name: 克隆 ImmortalWrt 源码
         run: |
           git clone --depth 1 "$REPO_URL" -b "${{ matrix.branch }}" openwrt
           echo "OPENWRT_PATH=$PWD/openwrt" >> $GITHUB_ENV
 
-      - name: 获取源码分支长标识（commit hash）
+      - name: 获取源码分支长标识
         run: |
           cd $OPENWRT_PATH
           COMMIT_HASH=$(git rev-parse --short HEAD)
@@ -90,12 +104,11 @@ jobs:
           restore-keys: |
             dl-${{ matrix.branch }}-
 
-      - name: 添加打印机驱动包（如果需要 CUPS）
-        if: matrix.config.need_cups == true
+      - name: 添加打印机驱动包
+        if: matrix.config.cups == true
         run: |
           cd $OPENWRT_PATH
           git clone --depth=1 https://github.com/master-0123/openwrt-printing-packages.git package/printing-packages
-          echo "已将打印机驱动包克隆到 package/printing-packages"
 
       - name: 更新 feeds 并安装软件包
         run: |
@@ -134,7 +147,7 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           artifacts: ${{ env.FIRMWARE_PATH }}/*.bin,${{ env.FIRMWARE_PATH }}/*.manifest,${{ env.FIRMWARE_PATH }}/build.config
           body: |
-            ## XG-040G-MD 固件 (${{ matrix.branch }} / ${{ matrix.config.suffix }})
+            ## XG-040G-MD 固件 (${{ matrix.config.suffix }})
 
             ### 📦 构建信息
             | 项目 | 内容 |
@@ -164,7 +177,7 @@ jobs:
             - 建议在刷机前备份原厂固件和重要数据。
             - 若固件内集成第三方插件，其安全性请自行评估。
             - 本固件为自动编译生成，请仔细核对文件完整性后再刷写。
-            ${{ contains(matrix.config.desc, 'CUPS') && '\n- **打印机驱动说明**：本固件集成了 CUPS 打印服务，默认包含 Epson 打印机驱动 (epson-inkjet-printer-escpr)，如需使用其他品牌打印机，请自行安装对应驱动。' || '' }}
+            ${{ matrix.config.cups == true && '\n- **打印机驱动说明**：本固件集成了 CUPS 打印服务，默认包含 Epson 打印机驱动 (epson-inkjet-printer-escpr)，如需使用其他品牌打印机，请自行安装对应驱动。' || '' }}
 
             ---
             *由 GitHub Actions 自动构建 | Release ${{ env.RELEASE_TAG }}*
