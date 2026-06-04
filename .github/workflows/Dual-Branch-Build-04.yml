@@ -80,7 +80,7 @@ jobs:
             echo "⚠️ 未选择任何配置，默认使用 seed-02.config"
           fi
 
-          matrix_json="["
+          matrix_json='{"include":['
           first=true
           for branch in "${branches[@]}"; do
             for config in "${configs[@]}"; do
@@ -92,7 +92,7 @@ jobs:
               matrix_json+="{\"branch\":\"$branch\",\"config\":\"$config\"}"
             done
           done
-          matrix_json+="]"
+          matrix_json+="]}"
           echo "matrix=$matrix_json" >> $GITHUB_OUTPUT
 
   Build:
