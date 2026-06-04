@@ -17,7 +17,7 @@ env:
   # REPO_BRANCH 将由 workflow_dispatch 输入动态设置
   DEVICE_TARGET: airoha
   DEVICE_SUBTARGET: an7581
-  CONFIG_FILE: config/seed-05.config
+  CONFIG_FILE: config/seed-04.config
   CACHE_TOOLCHAIN: true
   UPLOAD_BIN_DIR: false
   FIRMWARE_RELEASE: true
