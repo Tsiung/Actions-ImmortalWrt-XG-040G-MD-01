@@ -246,7 +246,7 @@ jobs:
         if grep -q "CONFIG_PACKAGE_cups=y" .config; then
           echo "🖨️ 预编译 CUPS 及过滤器..."
           make package/cups/compile -j1 V=s
-          make package/cups-filters/compile -j1 V=s
+          # make package/cups-filters/compile -j1 V=s
         fi
         make -j$(nproc) || make -j1 || make -j1 V=s
         echo "status=success" >> $GITHUB_OUTPUT
