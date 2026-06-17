@@ -44,7 +44,7 @@ env:
   DEVICE_TARGET: airoha
   DEVICE_SUBTARGET: an7581
   CACHE_TOOLCHAIN: true
-  UPLOAD_BIN_DIR: false
+  UPLOAD_BIN_DIR: true
   FIRMWARE_RELEASE: true
   TZ: Asia/Shanghai
 
