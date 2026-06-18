@@ -1,241 +1,383 @@
-name: XG-040G-MD Dual-Branch-Build-02
+name: Dual-Branch-Build-02
 
 on:
   workflow_dispatch:
     inputs:
-      configs:
-        description: |
-          要编译的配置（JSON 数组格式，例如 ["seed-01","seed-02"]）
-          全部编译请输入: ["seed-01","seed-02","seed-03","seed-04","seed-05"]
-        required: true
-        type: string
-        default: '["seed-01","seed-02","seed-03","seed-04","seed-05"]'
+      branch_master:
+        description: '编译 master-XG-040G-MD 分支'
+        required: false
+        type: boolean
+        default: true
+      branch_openwrt25:
+        description: '编译 openwrt-25.12-XG-040G-MD 分支'
+        required: false
+        type: boolean
+        default: false
+      seed01:
+        description: 'seed-01.config'
+        required: false
+        type: boolean
+        default: false
+      seed02:
+        description: 'seed-02.config'
+        required: false
+        type: boolean
+        default: false
+      seed032:
+        description: 'seed-03.config'
+        required: false
+        type: boolean
+        default: false
+      seed04:
+        description: 'seed-04.config'
+        required: false
+        type: boolean
+        default: false
+      seed05:
+        description: 'seed-05.config'
+        required: false
+        type: boolean
+        default: false
+      seed06:
+        description: 'seed-06.config'
+        required: false
+        type: boolean
+        default: false
 
-permissions:
-  contents: write
+env:
+  REPO_URL: https://github.com/Tsiung/immortalwrt
+  DEVICE_TARGET: airoha
+  DEVICE_SUBTARGET: an7581
+  CACHE_TOOLCHAIN: true
+  UPLOAD_BIN_DIR: true
+  FIRMWARE_RELEASE: true
+  TZ: Asia/Shanghai
 
 jobs:
-  build:
+  prepare:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        config: ${{ fromJSON(github.event.inputs.configs) }}
-        branch: ["master-XG-040G-MD", "openwrt-25.12-XG-040G-MD"]
-    env:
-      REPO_URL: https://github.com/fzs209/immortalwrt.git
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
     steps:
-      - name: Checkout actions repository
-        uses: actions/checkout@v4
-        with:
-          path: actions-repo
-
-      - name: Checkout ImmortalWrt source
-        uses: actions/checkout@v4
-        with:
-          repository: fzs209/immortalwrt
-          ref: ${{ matrix.branch }}
-          path: immortalwrt
-
-      - name: Setup build environment
+      - name: Generate build matrix
+        id: set-matrix
         run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential clang flex bison g++ gawk \
-          gcc-multilib g++-multilib gettext git libncurses-dev libssl-dev \
-          python3 python3-setuptools rsync unzip zlib1g-dev file wget
-
-      - name: Copy config
-        run: cp actions-repo/${{ matrix.config }}.config immortalwrt/.config
-
-      - name: Add custom feeds and packages
-        working-directory: immortalwrt
-        run: |
-          echo "src-git cups https://github.com/fengchen-github/openwrt-cups.git" >> feeds.conf.default
-          git clone --depth=1 https://github.com/master-0123/openwrt-printing-packages package/printing-packages
-
-      - name: Update feeds
-        working-directory: immortalwrt
-        run: |
-          ./scripts/feeds update -a
-          ./scripts/feeds install -a
-
-      - name: Expand config
-        working-directory: immortalwrt
-        run: make defconfig
-
-      - name: Get kernel version
-        id: kernel
-        working-directory: immortalwrt
-        run: |
-          KERNEL_VERSION=$(make -s kernelversion 2>/dev/null || echo "unknown")
-          echo "KERNEL_VERSION=$KERNEL_VERSION" >> $GITHUB_ENV
-
-      - name: Download sources
-        working-directory: immortalwrt
-        run: make download -j$(nproc)
-
-      - name: Compile firmware
-        working-directory: immortalwrt
-        run: make -j$(nproc) V=s
-
-      - name: Collect artifacts
-        id: collect
-        run: |
-          cd immortalwrt/bin/targets/*/*
-          TARGET_DIR=$(pwd)
-          TARGET=$(basename $(dirname $TARGET_DIR))/$(basename $TARGET_DIR)
-          mkdir -p $GITHUB_WORKSPACE/artifacts
-
-          # 重命名固件以避免分支间文件名冲突
-          for f in *squashfs-sysupgrade.bin; do
-            cp "$f" "$GITHUB_WORKSPACE/artifacts/${f%.bin}-${{ matrix.branch }}.bin"
-          done
-          for f in *squashfs-factory.bin; do
-            cp "$f" "$GITHUB_WORKSPACE/artifacts/${f%.bin}-${{ matrix.branch }}.bin"
-          done
-          cp $GITHUB_WORKSPACE/immortalwrt/.config $GITHUB_WORKSPACE/artifacts/build-${{ matrix.branch }}.config
-
-          COMMIT_SHA=$(cd $GITHUB_WORKSPACE/immortalwrt && git rev-parse HEAD)
-          SHORT_SHA=$(cd $GITHUB_WORKSPACE/immortalwrt && git rev-parse --short HEAD)
-          cat > $GITHUB_WORKSPACE/artifacts/info.txt <<EOF
-          TARGET=$TARGET
-          BRANCH=${{ matrix.branch }}
-          COMMIT_SHA=$COMMIT_SHA
-          SHORT_SHA=$SHORT_SHA
-          KERNEL_VERSION=$KERNEL_VERSION
-          EOF
-          echo "ARTIFACT_NAME=firmware-${{ matrix.config }}-${{ matrix.branch }}" >> $GITHUB_ENV
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ env.ARTIFACT_NAME }}
-          path: artifacts/
-
-  release:
-    needs: build
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        config: ${{ fromJSON(github.event.inputs.configs) }}
-    steps:
-      - name: Download firmware artifacts
-        uses: actions/download-artifact@v4
-        with:
-          pattern: firmware-${{ matrix.config }}-*
-          path: release-files
-
-      - name: Prepare release metadata
-        id: meta
-        run: |
-          CONFIG=${{ matrix.config }}
-          case $CONFIG in
-            seed-01)
-              FEATURE="Base"
-              CONFIG_DESC="基础功能"
-              ;;
-            seed-02)
-              FEATURE="OpenClash"
-              CONFIG_DESC="基础功能 + OpenClash"
-              ;;
-            seed-03)
-              FEATURE="OpenClash-KSMBD"
-              CONFIG_DESC="基础功能 + OpenClash + KSMBD文件共享"
-              ;;
-            seed-04)
-              FEATURE="OpenClash-CUPS"
-              CONFIG_DESC="基础功能 + OpenClash + CUPS打印机共享"
-              ;;
-            seed-05)
-              FEATURE="OpenClash-KSMBD-CUPS"
-              CONFIG_DESC="基础功能 + OpenClash + KSMBD文件共享 + CUPS打印机共享"
-              ;;
-          esac
-          DATE=$(date +%Y%m%d)
-          RELEASE_TAG="XG-040G-MD-${FEATURE}-${DATE}"
-          echo "FEATURE=$FEATURE" >> $GITHUB_ENV
-          echo "CONFIG_DESC=$CONFIG_DESC" >> $GITHUB_ENV
-          echo "DATE=$DATE" >> $GITHUB_ENV
-          echo "RELEASE_TAG=$RELEASE_TAG" >> $GITHUB_ENV
-
-      - name: Gather info and flatten assets
-        run: |
-          cd release-files
-          PLATFORM=""
-          KERNEL=""
-          BRANCH_INFO=""
-          for dir in firmware-*; do
-            if [ -f "$dir/info.txt" ]; then
-              source <(grep -E '^(TARGET|KERNEL_VERSION|BRANCH|COMMIT_SHA)=' "$dir/info.txt")
-              BRANCH_INFO+="${BRANCH}:${COMMIT_SHA} "
-              [ -z "$PLATFORM" ] && PLATFORM=$TARGET
-              [ -z "$KERNEL" ] && KERNEL=$KERNEL_VERSION
-            fi
-          done
-          echo "PLATFORM=$PLATFORM" >> $GITHUB_ENV
-          echo "KERNEL=$KERNEL" >> $GITHUB_ENV
-          echo "BRANCH_INFO=$BRANCH_INFO" >> $GITHUB_ENV
-
-          # 只保留固件和配置文件
-          mkdir -p $GITHUB_WORKSPACE/dist
-          find . -type f \( -name "*.bin" -o -name "build-*.config" \) -exec cp {} $GITHUB_WORKSPACE/dist/ \;
-
-      - name: Generate release body
-        run: |
-          BODY="### 📦 构建信息"$'\n'
-          BODY+="| 项目 | 内容 |"$'\n'
-          BODY+="|------|------|"$'\n'
-          BODY+="| **设备型号** | XG-040G-MD |"$'\n'
-          BODY+="| **目标平台** | ${PLATFORM:-unknown} |"$'\n'
-          BODY+="| **内核版本** | ${KERNEL:-unknown} |"$'\n'
-          BODY+="| **配置类型** | ${CONFIG_DESC} |"$'\n'
-          BODY+="| **源码来源** | https://github.com/fzs209/immortalwrt |"$'\n'
-          BODY+="| **源码分支** | $(echo $BRANCH_INFO | sed 's/ /<br>/g') |"$'\n'
-          BODY+="| **编译时间** | $(date -u +"%Y-%m-%d %H:%M:%S UTC") |"$'\n'
-          BODY+=""$'\n'
-
-          BODY+="### 🗂️ 文件说明"$'\n'
-          cd $GITHUB_WORKSPACE/dist
-          for f in *; do
-            if [[ "$f" == *sysupgrade*.bin ]]; then
-              BODY+="- \`$f\` → 在已有 OpenWrt/ImmortalWrt 中升级使用"$'\n'
-            elif [[ "$f" == *factory*.bin ]]; then
-              BODY+="- \`$f\` → 从uboot首次刷机使用"$'\n'
-            elif [[ "$f" == build-*.config ]]; then
-              BODY+="- \`$f\` → 本次编译使用的完整配置文件"$'\n'
-            fi
-          done
-          BODY+=""$'\n'
-
-          BODY+="### 🔐 默认信息"$'\n'
-          BODY+="| 项目 | 默认值 |"$'\n'
-          BODY+="|------|--------|"$'\n'
-          BODY+="| **管理地址** | 192.168.1.1 |"$'\n'
-          BODY+="| **用户名** | root |"$'\n'
-          BODY+="| **密码** | *无（首次登录后请务必设置）* |"$'\n'
-          BODY+=""$'\n'
-
-          BODY+="### ⚠️ 注意事项"$'\n'
-          BODY+="- 刷机前请务必核对设备型号，错误固件可能导致变砖。"$'\n'
-          BODY+="- 建议在刷机前备份原厂固件和重要数据。"$'\n'
-          BODY+="- 若固件内集成第三方插件，其安全性请自行评估。"$'\n'
-          BODY+="- 本固件为自动编译生成，请仔细核对文件完整性后再刷写。"$'\n'
-
-          if echo "$FEATURE" | grep -q "CUPS"; then
-            BODY+="- 打印机共享功能集成了 **Epson-inkjet-printer-escpr** 驱动，支持部分爱普生喷墨打印机。如需其他驱动请自行添加。"$'\n'
+          branches=()
+          if [[ "${{ github.event.inputs.branch_master }}" == "true" ]]; then
+            branches+=("master-XG-040G-MD")
+          fi
+          if [[ "${{ github.event.inputs.branch_openwrt25 }}" == "true" ]]; then
+            branches+=("openwrt-25.12-XG-040G-MD")
+          fi
+          if [ ${#branches[@]} -eq 0 ]; then
+            branches+=("master-XG-040G-MD")
+            echo "⚠️ 未选择任何分支，默认使用 master-XG-040G-MD"
           fi
 
-          BODY+="---"$'\n'
-          BODY+="*由 GitHub Actions 自动构建 | Release ${RELEASE_TAG}*"
+          configs=()
+          [[ "${{ github.event.inputs.seed01 }}" == "true" ]] && configs+=("seed-01")
+          [[ "${{ github.event.inputs.seed02 }}" == "true" ]] && configs+=("seed-02")
+          [[ "${{ github.event.inputs.seed032 }}" == "true" ]] && configs+=("seed-03")
+          [[ "${{ github.event.inputs.seed04 }}" == "true" ]] && configs+=("seed-04")
+          [[ "${{ github.event.inputs.seed05 }}" == "true" ]] && configs+=("seed-05")
+          if [ ${#configs[@]} -eq 0 ]; then
+            configs+=("seed-02")
+            echo "⚠️ 未选择任何配置，默认使用 seed-02.config"
+          fi
 
-          echo "$BODY" > $GITHUB_WORKSPACE/release-body.md
+          matrix_json='{"include":['
+          first=true
+          for branch in "${branches[@]}"; do
+            for config in "${configs[@]}"; do
+              if [ "$first" = true ]; then
+                first=false
+              else
+                matrix_json+=","
+              fi
+              matrix_json+="{\"branch\":\"$branch\",\"config\":\"$config\"}"
+            done
+          done
+          matrix_json+="]}"
+          echo "matrix=$matrix_json" >> $GITHUB_OUTPUT
 
-      - name: Create Release and Upload Assets
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: ${{ env.RELEASE_TAG }}
-          name: ${{ env.RELEASE_TAG }}
-          body_path: $GITHUB_WORKSPACE/release-body.md
-          files: dist/*
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  Build:
+    needs: prepare
+    runs-on: ubuntu-latest
+    strategy:
+      matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
+      fail-fast: false
+    env:
+      REPO_BRANCH: ${{ matrix.branch }}
+      CONFIG_FILE: config/${{ matrix.config }}.config
+
+    steps:
+    - name: Check Server Performance(检查服务器性能)
+      run: |
+        echo "警告⚠"
+        echo "分配的服务器性能有限，若选择的插件过多，务必注意CPU性能！"
+        echo -e "已知CPU型号（降序）：7763，8370C，8272CL，8171M，E5-2673 \n"
+        echo "--------------------------CPU信息--------------------------"
+        echo "CPU物理数量：$(cat /proc/cpuinfo | grep "physical id" | sort | uniq | wc -l)"
+        echo -e "CPU核心信息：$(cat /proc/cpuinfo | grep name | cut -f2 -d: | uniq -c) \n"
+        echo "--------------------------内存信息--------------------------"
+        echo "已安装内存详细信息："
+        echo -e "$(sudo lshw -short -C memory | grep GiB) \n"
+        echo "--------------------------硬盘信息--------------------------"
+        echo "硬盘数量：$(ls /dev/sd* | grep -v [1-9] | wc -l)" && df -hT
+
+    - name: Initialization Environment(初始化环境)
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        sudo bash -c 'bash <(curl -sL https://build-scripts.immortalwrt.org/init_build_environment.sh)'
+        sudo -E apt -yqq install dos2unix
+        sudo -E apt -yqq install libfuse-dev
+        sudo -E apt -yqq autoremove --purge
+        sudo -E apt -yqq autoclean
+        sudo -E apt -yqq clean
+        sudo -E systemctl daemon-reload
+        sudo timedatectl set-timezone "$TZ"
+
+    - name: Combine Disks(合并磁盘)
+      uses: easimon/maximize-build-space@master
+      with:
+        swap-size-mb: 1024
+        temp-reserve-mb: 100
+        root-reserve-mb: 1024
+
+    - name: Checkout
+      uses: actions/checkout@main
+
+    - name: Clone Source Code(克隆源代码)
+      run: |
+        df -hT $GITHUB_WORKSPACE
+        AUTH_REPO_URL=$(echo "$REPO_URL" | sed "s|://|://x-access-token:${{ secrets.REPO_TOKEN }}@|")
+        git clone "$AUTH_REPO_URL" -b "$REPO_BRANCH" openwrt
+        cd openwrt
+        echo "OPENWRT_PATH=$PWD" >> $GITHUB_ENV
+        COMMIT_HASH=$(git rev-parse HEAD)
+        COMMIT_SHORT=$(git rev-parse --short HEAD)
+        echo "COMMIT_HASH=$COMMIT_HASH" >> $GITHUB_ENV
+        echo "COMMIT_SHORT=$COMMIT_SHORT" >> $GITHUB_ENV
+        VERSION_INFO=$(git show -s --date=short --format="作者: %an<br/>时间: %cd<br/>内容: %s<br/>hash: %H")
+        echo "VERSION_INFO=$VERSION_INFO" >> $GITHUB_ENV
+
+    - name: Generate Variables(生成变量)
+      run: |
+        SOURCE_REPO="$(echo $REPO_URL | awk -F '/' '{print $(NF)}')"
+        echo "SOURCE_REPO=$SOURCE_REPO" >> $GITHUB_ENV
+        echo "DEVICE_TARGET=$DEVICE_TARGET" >> $GITHUB_ENV
+        echo "DEVICE_SUBTARGET=$DEVICE_SUBTARGET" >> $GITHUB_ENV
+        case "$REPO_BRANCH" in
+          "master-XG-040G-MD") BRANCH_SHORT="master" ;;
+          "openwrt-25.12-XG-040G-MD") BRANCH_SHORT="25.12" ;;
+          *) BRANCH_SHORT="$REPO_BRANCH" ;;
+        esac
+        echo "BRANCH_SHORT=$BRANCH_SHORT" >> $GITHUB_ENV
+
+    - name: Cache Toolchain(缓存工具链)
+      if: env.CACHE_TOOLCHAIN == 'true'
+      uses: HiGarfield/cachewrtbuild@main
+      with:
+        ccache: false
+        mixkey: ${{ env.SOURCE_REPO }}-${{ env.REPO_BRANCH }}-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}
+        prefix: ${{ env.OPENWRT_PATH }}
+
+    - name: Check Printer Config(检测是否为打印机配置)
+      id: check_print
+      run: |
+        if grep -qE "CONFIG_PACKAGE_cups|CONFIG_PACKAGE_luci-app-cups|printing" ${{ env.CONFIG_FILE }}; then
+          echo "enabled=true" >> $GITHUB_OUTPUT
+          echo "PRINTER_ENABLED=true" >> $GITHUB_ENV
+        else
+          echo "enabled=false" >> $GITHUB_OUTPUT
+          echo "PRINTER_ENABLED=false" >> $GITHUB_ENV
+        fi
+
+    - name: Add printer packages(添加打印包到 package 目录) [仅打印机配置]
+      if: steps.check_print.outputs.enabled == 'true'
+      working-directory: ${{ env.OPENWRT_PATH }}
+      run: |
+        echo "📥 克隆打印包仓库..."
+        git clone --depth=1 https://gitee.com/master0123/openwrt-printing-packages.git /tmp/print-tmp
+        cp -r /tmp/print-tmp/* package/
+        rm -rf /tmp/print-tmp
+        echo "🔧 修补 epson-inkjet-printer-escpr 依赖（+libcupsimage）"
+        sed -i '/DEPENDS:=+cups$/s/$/ +libcupsimage/' package/epson-inkjet-printer-escpr/Makefile
+        if ! grep -q '+libcupsimage' package/epson-inkjet-printer-escpr/Makefile; then
+          sed -i '/DEPENDS:=/s/$/ +libcupsimage/' package/epson-inkjet-printer-escpr/Makefile
+        fi
+
+    - name: Install Feeds(安装feeds) [打印机配置]
+      if: steps.check_print.outputs.enabled == 'true'
+      run: |
+        cd $OPENWRT_PATH
+        ./scripts/feeds update -a
+        ./scripts/feeds install -a
+
+    - name: Install Feeds(安装feeds) [标准配置]
+      if: steps.check_print.outputs.enabled != 'true'
+      run: |
+        cd $OPENWRT_PATH
+        ./scripts/feeds update -a
+        ./scripts/feeds install -a
+
+    - name: Load Custom Configuration(加载自定义配置)
+      run: |
+        [ -e $CONFIG_FILE ] && mv $CONFIG_FILE $OPENWRT_PATH/.config
+        cd $OPENWRT_PATH
+        if grep -qE "CONFIG_PACKAGE_cups|CONFIG_PACKAGE_luci-app-cups|printing" .config; then
+          echo "🖨️ 检测到打印机配置，追加 cups 相关依赖"
+          echo "CONFIG_PACKAGE_cups=y" >> .config
+          echo "CONFIG_PACKAGE_libcups=y" >> .config
+          echo "CONFIG_PACKAGE_libcupsimage=y" >> .config
+        fi
+        make defconfig
+        grep "CONFIG_PACKAGE_luci-app-airoha-npu" .config || echo "WARNING: option missing!"
+
+    - name: Download DL Package(下载DL软件包)
+      run: |
+        cd $OPENWRT_PATH
+        make download -j8
+        find dl -size -1024c -exec ls -l {} \;
+        find dl -size -1024c -exec rm -f {} \;
+
+    - name: Compile Firmware(开始编译固件)
+      id: compile
+      run: |
+        cd $OPENWRT_PATH
+        echo -e "$(nproc) thread compile"
+        # 若启用打印机，先预编译 cups (host + target) 以确保 libcupsimage 就绪
+        if grep -q "CONFIG_PACKAGE_cups=y" .config; then
+          echo "🖨️ 预编译 CUPS (host 及目标版本)..."
+          make package/cups/host/compile -j1 V=s
+          make package/cups/compile -j1 V=s
+        fi
+        make -j$(nproc) || make -j1 || make -j1 V=s
+        echo "status=success" >> $GITHUB_OUTPUT
+        echo "DATE=$(date +"%Y-%m-%d %H:%M:%S")" >> $GITHUB_ENV
+        echo "FILE_DATE=$(date +"%Y.%m.%d")" >> $GITHUB_ENV
+
+    - name: Check Space Usage(检查空间使用情况)
+      if: (!cancelled())
+      run: df -hT
+
+    - name: Upload Bin Directory(上传固件目录) [可选]
+      if: steps.compile.outputs.status == 'success' && env.UPLOAD_BIN_DIR == 'true'
+      uses: actions/upload-artifact@main
+      with:
+        name: ${{ env.SOURCE_REPO }}-bin-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ env.FILE_DATE }}-${{ matrix.config }}
+        path: ${{ env.OPENWRT_PATH }}/bin
+
+    - name: Organize Files(整理文件)
+      if: steps.compile.outputs.status == 'success'
+      run: |
+        cd $OPENWRT_PATH/bin/targets/*/*
+        cat sha256sums
+        echo "VERSION_KERNEL=$(find -type f -name "*.manifest" -exec grep -oP '^kernel - \K.*?(?=~|-\d+-)' {} \;)" >> $GITHUB_ENV
+        cp $OPENWRT_PATH/.config build.config
+        mv -f $OPENWRT_PATH/bin/packages/*/*/*.apk packages
+        tar -zcf Packages.tar.gz packages
+        rm -rf packages feeds.buildinfo version.buildinfo
+        echo "FIRMWARE_PATH=$PWD" >> $GITHUB_ENV
+
+    - name: Generate Config Description & Short Name(生成配置描述与短名)
+      if: steps.compile.outputs.status == 'success'
+      working-directory: ${{ env.OPENWRT_PATH }}
+      run: |
+        desc="基础功能"
+        short="base"
+        if grep -q "CONFIG_PACKAGE_luci-app-openclash=y" .config; then
+          desc+=" [OpenClash]"
+          short+="-openclash"
+        fi
+        if grep -q "CONFIG_PACKAGE_luci-app-ksmbd=y" .config; then
+          desc+=" [KSMBD文件共享]"
+          short+="-ksmbd"
+        fi
+        if grep -q "CONFIG_PACKAGE_cups=y" .config; then
+          desc+=" [CUPS打印机共享]"
+          short+="-cups"
+        fi
+        echo "CONFIG_DESC=$desc" >> $GITHUB_ENV
+        echo "CONFIG_SHORT=$short" >> $GITHUB_ENV
+        RELEASE_TAG="XG-040G-MD-ImmortalWrt-${BRANCH_SHORT}-${short}-$(date +"%Y%m%d")"
+        echo "RELEASE_TAG=$RELEASE_TAG" >> $GITHUB_ENV
+
+    - name: Rename Firmware Files(重命名固件文件)
+      if: steps.compile.outputs.status == 'success'
+      working-directory: ${{ env.FIRMWARE_PATH }}
+      run: |
+        PREFIX="XG-040G-MD-ImmortalWrt-${BRANCH_SHORT}-${CONFIG_SHORT}"
+        echo "📛 固件前缀: $PREFIX"
+        if [ -f *-squashfs-factory.bin ]; then
+          mv *-squashfs-factory.bin ${PREFIX}-squashfs-factory.bin
+          echo "✅ factory.bin 重命名成功"
+        fi
+        if [ -f *-squashfs-sysupgrade.bin ]; then
+          mv *-squashfs-sysupgrade.bin ${PREFIX}-squashfs-sysupgrade.bin
+          echo "✅ sysupgrade.bin 重命名成功"
+        fi
+        rm -f sha256sums
+        sha256sum *.bin > sha256sums
+        echo "📄 已重新生成 sha256sums"
+
+    - name: Set Printer Notice(设置打印机注意事项)
+      if: steps.compile.outputs.status == 'success' && env.PRINTER_ENABLED == 'true'
+      run: |
+        echo "PRINTER_NOTE=- 本固件包含CUPS打印机共享功能，集成驱动为 **Epson-inkjet-printer-escpr**，其他品牌打印机可能需要手动安装驱动。" >> $GITHUB_ENV
+
+    - name: Upload Firmware To Artifact(将固件上传到Artifact) [不发Release时]
+      if: steps.compile.outputs.status == 'success' && env.FIRMWARE_RELEASE != 'true'
+      uses: actions/upload-artifact@main
+      with:
+        name: ${{ env.SOURCE_REPO }}-firmware-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ env.FILE_DATE }}-${{ matrix.config }}
+        path: ${{ env.FIRMWARE_PATH }}
+
+    - name: Upload Firmware To Release(发布固件)
+      if: steps.compile.outputs.status == 'success' && env.FIRMWARE_RELEASE == 'true'
+      uses: ncipollo/release-action@v1
+      with:
+        name: ${{ env.RELEASE_TAG }}
+        tag: ${{ env.RELEASE_TAG }}
+        token: ${{ secrets.GITHUB_TOKEN }}
+        artifacts: ${{ env.FIRMWARE_PATH }}/*
+        body: |
+          ### 📦 构建信息
+          | 项目 | 内容 |
+          |------|------|
+          | **设备型号** | Nokia Bell XG-040G-MD |
+          | **目标平台** | Airoha/an7581 |
+          | **源码分支** | ${{ env.REPO_BRANCH }} (`${{ env.COMMIT_SHORT }}`) |
+          | **提交哈希** | ${{ env.COMMIT_HASH }} |
+          | **配置类型** | ${{ env.CONFIG_DESC }} |
+          | **源码来源** | https://github.com/wina8201/immortalwrt (forked from fzs209/immortalwrt) |
+          | **编译时间** | ${{ env.DATE }} |
+          | **内核版本** | ${{ env.VERSION_KERNEL }} |
+          
+          ### 🗂️ 文件说明
+          - `*-squashfs-sysupgrade.bin` → 在已有 OpenWrt/ImmortalWrt 中升级使用
+          - `*-squashfs-factory.bin` → 从uboot首次刷机使用
+          - `build.config` → 本次编译使用的完整配置文件
+          
+          ### 🔐 默认信息
+          | 项目 | 默认值 |
+          |------|--------|
+          | **管理地址** | 192.168.1.1 |
+          | **用户名** | root |
+          | **密码** | *无（首次登录后请务必设置）* |
+          
+          ### ⚠️ 注意事项
+          - 刷机前请务必核对设备型号，错误固件可能导致变砖。
+          - 建议在刷机前备份原厂固件和重要数据。
+          - 若固件内集成第三方插件，其安全性请自行评估。
+          - 本固件为自动编译生成，请仔细核对文件完整性后再刷写。
+          ${{ env.PRINTER_NOTE }}
+          
+          ---
+          *由 GitHub Actions 自动构建 | Release ${{ env.RELEASE_TAG }}*
+          
+          <details>
+          <summary>📜 源码最后提交</summary>
+          ${{ env.VERSION_INFO }}
+          </details>
